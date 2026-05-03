@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artifacts
+spec:
+  accessModes: [ReadWriteMany]
+  resources: {requests: {storage: 200Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-cache
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 5Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/w3rdw/sdr-research-api
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: sdr-secrets, key: postgres-password}
+            - name: DATABASE_URL
+              value: "postgresql://sdr_viewer:$(POSTGRES_PASSWORD)@postgres:5432/sdr_viewer"
+            # Set these in your overlay (use configMapGenerator):
+            - {name: STATION_CALLSIGN, value: N0CALL}
+            - {name: STATION_GRID, value: AA00aa}
+            - {name: STATION_LAT, value: "0.0"}
+            - {name: STATION_LON, value: "0.0"}
+            - {name: OPERATOR_EMAIL, value: operator@example.com}
+            - {name: CACHE_PATH, value: /cache}
+            - {name: TEXT_BASE_PATH, value: /data/text}
+            - {name: HF_TEXT_BASE_PATH, value: /data/hf/text}
+            - {name: CORS_ORIGINS, value: "http://localhost:3000"}
+          ports:
+            - {containerPort: 8000, name: http}
+          volumeMounts:
+            - {name: artifacts, mountPath: /data}
+            - {name: cache, mountPath: /cache}
+          readinessProbe:
+            httpGet: {path: /api/v1/health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/v1/health, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits:   {cpu: 2000m, memory: 6Gi}
+      volumes:
+        - {name: artifacts, persistentVolumeClaim: {claimName: artifacts}}
+        - {name: cache, persistentVolumeClaim: {claimName: api-cache}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector:
+    app.kubernetes.io/component: api
+  ports:
+    - {port: 8000, targetPort: http, name: http}

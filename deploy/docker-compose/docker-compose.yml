@@ -1,0 +1,142 @@
+# sdr-research-oss — single-host stack via Docker Compose.
+#
+# Quickstart:
+#   1. cp ../../.env.example .env  (and edit)
+#   2. Plug in your SDR.
+#   3. docker compose up -d
+#
+# To use prebuilt images instead of local builds, set image: tags via .env
+# (API_IMAGE, UI_IMAGE, UNIFIED_SDR_IMAGE) and remove the `build:` blocks
+# below — or just keep both: compose will use the build if image isn't on disk.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sdr_viewer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-please}
+      POSTGRES_DB: ${POSTGRES_DB:-sdr_viewer}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-sdr_viewer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ${API_IMAGE:-ghcr.io/w3rdw/sdr-research-api:latest}
+    build:
+      context: ../../api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sdr_viewer}:${POSTGRES_PASSWORD:-change-me-please}@postgres:5432/${POSTGRES_DB:-sdr_viewer}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8080}
+      CACHE_PATH: /cache
+      TEXT_BASE_PATH: /data/text
+      HF_TEXT_BASE_PATH: /data/hf/text
+      STATION_CALLSIGN: ${STATION_CALLSIGN:-N0CALL}
+      STATION_GRID: ${STATION_GRID:-AA00aa}
+      STATION_LAT: ${STATION_LAT:-0.0}
+      STATION_LON: ${STATION_LON:-0.0}
+      OPERATOR_EMAIL: ${OPERATOR_EMAIL:-operator@example.com}
+      REPEATERBOOK_ENABLED: ${REPEATERBOOK_ENABLED:-false}
+      REPEATERBOOK_API_KEY: ${REPEATERBOOK_API_KEY:-}
+      REPEATERBOOK_USER_AGENT: ${REPEATERBOOK_USER_AGENT:-sdr-research-oss/1.0 (operator@example.com)}
+      REPEATERBOOK_EMAIL: ${REPEATERBOOK_EMAIL:-operator@example.com}
+      REPEATERBOOK_LATITUDE: ${REPEATERBOOK_LATITUDE:-0.0}
+      REPEATERBOOK_LONGITUDE: ${REPEATERBOOK_LONGITUDE:-0.0}
+      REPEATERBOOK_RADIUS_MILES: ${REPEATERBOOK_RADIUS_MILES:-75}
+      REPEATERBOOK_STATES: ${REPEATERBOOK_STATES:-}
+      REPEATERBOOK_SYNC_HOURS: ${REPEATERBOOK_SYNC_HOURS:-24}
+      ALERT_CALLSIGNS: ${ALERT_CALLSIGNS:-}
+      ALERT_KEYWORDS: ${ALERT_KEYWORDS:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    volumes:
+      - sdr-artifacts:/data
+      - api-cache:/cache
+    ports:
+      - "8000:8000"
+
+  ui:
+    image: ${UI_IMAGE:-ghcr.io/w3rdw/sdr-research-ui:latest}
+    build:
+      context: ../../ui
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+  # ─── SDR capture (privileged for USB) ──────────────────────────────────
+  # Requires: SDR plugged into the host. See docs/hardware-matrix.md.
+  unified-sdr:
+    image: ${UNIFIED_SDR_IMAGE:-ghcr.io/w3rdw/sdr-research-unified-sdr:latest}
+    build:
+      context: ../../decoders/unified-sdr
+    restart: unless-stopped
+    privileged: true               # USB device passthrough
+    devices:
+      - /dev/bus/usb:/dev/bus/usb  # all USB devices
+    environment:
+      CAPTURE_ID: ${CAPTURE_ID:-2m}
+      OSMOSDR_ARGS: ${OSMOSDR_ARGS:-rtl_tcp=rtl-tcp:1234}
+      SAMPLE_RATE: ${SAMPLE_RATE:-2400000}
+      DWELL_CENTER_HZ: ${DWELL_CENTER_HZ:-146000000}
+      FIXED_MONITOR_HZ: ${FIXED_MONITOR_HZ:-146520000}
+      SCAN_CENTERS: ${SCAN_CENTERS:-[]}
+      RF_GAIN: ${RF_GAIN:-40}
+      PPM_CORRECTION: ${PPM_CORRECTION:-0}
+      RF_SQUELCH_DB: ${RF_SQUELCH_DB:--50}
+      SQUELCH_OPEN_DB: ${SQUELCH_OPEN_DB:--50}
+      SQUELCH_CLOSE_DB: ${SQUELCH_CLOSE_DB:--55}
+      ENERGY_THRESH_DB: ${ENERGY_THRESH_DB:-10}
+      MIN_REC_SEC: ${MIN_REC_SEC:-0.5}
+      MAX_REC_SEC: ${MAX_REC_SEC:-120}
+      TAIL_SEC: ${TAIL_SEC:-1.5}
+      NUM_DYN_FM: ${NUM_DYN_FM:-8}
+      NUM_DYN_CW: ${NUM_DYN_CW:-4}
+      NUM_DYN_ACARS: ${NUM_DYN_ACARS:-0}
+      SLOT_RECYCLE_SEC: ${SLOT_RECYCLE_SEC:-300}
+    volumes:
+      - sdr-artifacts:/data
+    shm_size: '1gb'
+
+  # ─── Optional: APRS decoder ────────────────────────────────────────────
+  # Uncomment to enable. Reads WAVs from sdr-artifacts, writes APRS text.
+  # aprs-decoder:
+  #   image: ghcr.io/w3rdw/sdr-research-aprs:latest
+  #   build:
+  #     context: ../../decoders/aprs
+  #   restart: unless-stopped
+  #   volumes:
+  #     - sdr-artifacts:/data
+
+  # ─── Optional: Whisper voice transcription ─────────────────────────────
+  # voice-decoder:
+  #   image: ghcr.io/w3rdw/sdr-research-voice:latest
+  #   build:
+  #     context: ../../decoders/voice
+  #   restart: unless-stopped
+  #   environment:
+  #     WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+  #     WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+  #   volumes:
+  #     - sdr-artifacts:/data
+  #   # For GPU:
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: 1
+  #   #           capabilities: [gpu]
+
+volumes:
+  pgdata:
+  sdr-artifacts:
+  api-cache:

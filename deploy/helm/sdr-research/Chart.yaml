@@ -1,0 +1,19 @@
+apiVersion: v2
+name: sdr-research
+description: Software-defined radio capture, decode, transcribe, search.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - sdr
+  - amateur-radio
+  - ham-radio
+  - rtl-sdr
+  - airspy
+  - whisper
+  - transcription
+home: https://github.com/w3rdw/sdr-research-oss
+sources:
+  - https://github.com/w3rdw/sdr-research-oss
+maintainers:
+  - name: sdr-research-oss contributors

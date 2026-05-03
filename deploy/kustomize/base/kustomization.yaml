@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sdr
+
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - api.yaml
+  - ui.yaml
+  - unified-sdr.yaml
+
+commonLabels:
+  app.kubernetes.io/name: sdr-research
+
+# Image references — override in overlay.
+images:
+  - name: ghcr.io/w3rdw/sdr-research-api
+    newTag: latest
+  - name: ghcr.io/w3rdw/sdr-research-ui
+    newTag: latest
+  - name: ghcr.io/w3rdw/sdr-research-unified-sdr
+    newTag: latest
+
+# Secrets — provide your own (kustomize secretGenerator, sops, external-secrets,
+# sealed-secrets, etc.). Required keys:
+#   sdr-secrets (Secret)
+#     - postgres-password
+#     - repeaterbook-api-key   (optional)
+#     - alert-webhook-url      (optional)

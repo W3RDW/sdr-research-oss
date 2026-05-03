@@ -1,0 +1,158 @@
+# Default values for sdr-research.
+# Override these via `helm install -f my-values.yaml` or `--set`.
+
+# ─── Station identity ────────────────────────────────────────────────────
+station:
+  callsign: N0CALL
+  grid: AA00aa
+  latitude: 0.0
+  longitude: 0.0
+  operatorEmail: operator@example.com
+
+# ─── Image references ────────────────────────────────────────────────────
+images:
+  api:
+    repository: ghcr.io/w3rdw/sdr-research-api
+    tag: latest
+    pullPolicy: IfNotPresent
+  ui:
+    repository: ghcr.io/w3rdw/sdr-research-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  unifiedSdr:
+    repository: ghcr.io/w3rdw/sdr-research-unified-sdr
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# ─── PostgreSQL ──────────────────────────────────────────────────────────
+# In production prefer an external managed DB; this is a simple in-cluster
+# StatefulSet for getting started.
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  storage:
+    size: 20Gi
+    storageClass: ""    # empty = cluster default
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits:   {cpu: 1000m, memory: 2Gi}
+
+# Or, if postgres.enabled=false, point at an external DB:
+externalDatabase:
+  url: ""   # postgresql://user:pass@host:5432/db
+
+# ─── API service ─────────────────────────────────────────────────────────
+api:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits:   {cpu: 2000m, memory: 6Gi}
+  cors:
+    origins: []   # e.g. ["https://sdr.example.com"]
+  cache:
+    size: 5Gi
+  artifacts:
+    size: 200Gi
+    storageClass: ""
+    accessMode: ReadWriteMany   # needed if decoders share the volume
+
+# ─── UI service ──────────────────────────────────────────────────────────
+ui:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 80
+
+# ─── Ingress ─────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: sdr.example.com
+  tls:
+    enabled: false
+    secretName: ""
+
+# ─── SDR capture ─────────────────────────────────────────────────────────
+unifiedSdr:
+  enabled: true
+  captureId: "2m"
+  # Pin to a node with the SDR plugged in. Required.
+  nodeSelector: {}     # e.g. { kubernetes.io/hostname: my-sdr-node }
+  privileged: true
+  hostUsbPath: /dev/bus/usb
+  # OSMOSDR_ARGS — see docs/hardware-matrix.md
+  osmosdrArgs: "rtl_tcp=rtl-tcp:1234"
+  sampleRate: 2400000
+  dwellCenterHz: 146000000
+  fixedMonitorHz: 146520000
+  rfGain: 40
+  ppmCorrection: 0
+  squelch:
+    rfDb: -50
+    openDb: -50
+    closeDb: -55
+    energyThreshDb: 10
+  recording:
+    minSec: 0.5
+    maxSec: 120
+    tailSec: 1.5
+  slots:
+    fm: 8
+    cw: 4
+    acars: 0
+    recycleSec: 300
+
+# ─── RepeaterBook (optional) ─────────────────────────────────────────────
+# Get a token at https://www.repeaterbook.com/api/token_request.php
+repeaterbook:
+  enabled: false
+  apiKey: ""              # OR provide via existing secret below
+  existingSecret: ""      # secret name; key 'repeaterbook-api-key'
+  email: operator@example.com
+  userAgent: "sdr-research-oss/1.0 (operator@example.com)"
+  latitude: 0.0
+  longitude: 0.0
+  radiusMiles: 75
+  states: ""              # e.g. "OH,IN,KY"
+  syncHours: 24
+
+# ─── Alerting (optional webhook) ─────────────────────────────────────────
+alerts:
+  enabled: false
+  callsigns: ""
+  keywords: ""
+  webhookUrl: ""
+  existingSecret: ""      # secret name; key 'alert-webhook-url'
+
+# ─── Optional decoders ───────────────────────────────────────────────────
+decoders:
+  aprs:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-aprs, tag: latest }
+  cw:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-cw, tag: latest }
+  voice:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-voice, tag: latest }
+    gpu: false
+    nodeSelector: {}
+    whisperModel: base.en
+  pager:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-pager, tag: latest }
+  acars:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-acars, tag: latest }
+  vdl2:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-vdl2, tag: latest }
+  sstv:
+    enabled: false
+    image: { repository: ghcr.io/w3rdw/sdr-research-sstv, tag: latest }

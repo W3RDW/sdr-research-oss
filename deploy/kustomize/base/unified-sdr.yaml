@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-sdr
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: unified-sdr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: unified-sdr
+    spec:
+      # Pin to your SDR host in the overlay:
+      #   patches:
+      #   - target: {kind: Deployment, name: unified-sdr}
+      #     patch: |
+      #       - op: add
+      #         path: /spec/template/spec/nodeSelector
+      #         value: {kubernetes.io/hostname: my-sdr-host}
+      containers:
+        - name: unified-sdr
+          image: ghcr.io/w3rdw/sdr-research-unified-sdr
+          securityContext: {privileged: true}
+          env:
+            - {name: CAPTURE_ID, value: "2m"}
+            - {name: OSMOSDR_ARGS, value: "rtl_tcp=rtl-tcp:1234"}
+            - {name: SAMPLE_RATE, value: "2400000"}
+            - {name: DWELL_CENTER_HZ, value: "146000000"}
+            - {name: FIXED_MONITOR_HZ, value: "146520000"}
+            - {name: RF_GAIN, value: "40"}
+            - {name: PPM_CORRECTION, value: "0"}
+            - {name: RF_SQUELCH_DB, value: "-50"}
+            - {name: SQUELCH_OPEN_DB, value: "-50"}
+            - {name: SQUELCH_CLOSE_DB, value: "-55"}
+            - {name: ENERGY_THRESH_DB, value: "10"}
+            - {name: MIN_REC_SEC, value: "0.5"}
+            - {name: MAX_REC_SEC, value: "120"}
+            - {name: TAIL_SEC, value: "1.5"}
+            - {name: NUM_DYN_FM, value: "8"}
+            - {name: NUM_DYN_CW, value: "4"}
+            - {name: NUM_DYN_ACARS, value: "0"}
+            - {name: SLOT_RECYCLE_SEC, value: "300"}
+          volumeMounts:
+            - {name: artifacts, mountPath: /data}
+            - {name: dshm, mountPath: /dev/shm}
+            - {name: usb, mountPath: /dev/bus/usb}
+      volumes:
+        - {name: artifacts, persistentVolumeClaim: {claimName: artifacts}}
+        - {name: dshm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+        - {name: usb, hostPath: {path: /dev/bus/usb}}

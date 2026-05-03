@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.parcel-cache/
+*.tsbuildinfo
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config
+.env
+.env.local
+.env.*.local
+*.local
+
+# Build artifacts
+build/
+*.tar
+*.tar.gz
+
+# Helm
+deploy/helm/*/charts/
+deploy/helm/*/Chart.lock
+
+# Test outputs
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+
+# Local data
+data/
+recordings/
+artifacts/
+*.wav
+*.mp3
+*.sqlite
+*.db
+
+# Secrets — never commit
+secrets/
+*.sops.yaml
+*.age
+age.key

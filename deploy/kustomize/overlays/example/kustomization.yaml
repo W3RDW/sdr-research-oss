@@ -1,0 +1,44 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sdr
+
+resources:
+  - ../../base
+
+# Pin your image versions
+images:
+  - name: ghcr.io/w3rdw/sdr-research-api
+    newTag: v0.1.0
+  - name: ghcr.io/w3rdw/sdr-research-ui
+    newTag: v0.1.0
+  - name: ghcr.io/w3rdw/sdr-research-unified-sdr
+    newTag: v0.1.0
+
+# Provide your secrets here, or remove and use external-secrets / sops / etc.
+secretGenerator:
+  - name: sdr-secrets
+    literals:
+      - postgres-password=REPLACE-ME
+      # - repeaterbook-api-key=...
+      # - alert-webhook-url=...
+
+# Inject your station identity
+configMapGenerator:
+  - name: station-config
+    literals:
+      - STATION_CALLSIGN=N0CALL
+      - STATION_GRID=AA00aa
+      - STATION_LAT=0.0
+      - STATION_LON=0.0
+
+# Pin SDR pod to a specific node
+patches:
+  - target: {kind: Deployment, name: unified-sdr}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: {kubernetes.io/hostname: REPLACE-WITH-YOUR-NODE}
+      # Set OSMOSDR_ARGS for your hardware (see docs/hardware-matrix.md)
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: "rtl=0"

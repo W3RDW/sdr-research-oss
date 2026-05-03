@@ -1,0 +1,83 @@
+{{- if .Values.unifiedSdr.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-unified-sdr
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdr-research
+      app.kubernetes.io/component: unified-sdr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sdr-research
+        app.kubernetes.io/component: unified-sdr
+    spec:
+      {{- with .Values.unifiedSdr.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: unified-sdr
+          image: "{{ .Values.images.unifiedSdr.repository }}:{{ .Values.images.unifiedSdr.tag }}"
+          imagePullPolicy: {{ .Values.images.unifiedSdr.pullPolicy }}
+          {{- if .Values.unifiedSdr.privileged }}
+          securityContext:
+            privileged: true
+          {{- end }}
+          env:
+            - name: CAPTURE_ID
+              value: {{ .Values.unifiedSdr.captureId | quote }}
+            - name: OSMOSDR_ARGS
+              value: {{ .Values.unifiedSdr.osmosdrArgs | quote }}
+            - name: SAMPLE_RATE
+              value: {{ .Values.unifiedSdr.sampleRate | quote }}
+            - name: DWELL_CENTER_HZ
+              value: {{ .Values.unifiedSdr.dwellCenterHz | quote }}
+            - name: FIXED_MONITOR_HZ
+              value: {{ .Values.unifiedSdr.fixedMonitorHz | quote }}
+            - name: RF_GAIN
+              value: {{ .Values.unifiedSdr.rfGain | quote }}
+            - name: PPM_CORRECTION
+              value: {{ .Values.unifiedSdr.ppmCorrection | quote }}
+            - name: RF_SQUELCH_DB
+              value: {{ .Values.unifiedSdr.squelch.rfDb | quote }}
+            - name: SQUELCH_OPEN_DB
+              value: {{ .Values.unifiedSdr.squelch.openDb | quote }}
+            - name: SQUELCH_CLOSE_DB
+              value: {{ .Values.unifiedSdr.squelch.closeDb | quote }}
+            - name: ENERGY_THRESH_DB
+              value: {{ .Values.unifiedSdr.squelch.energyThreshDb | quote }}
+            - name: MIN_REC_SEC
+              value: {{ .Values.unifiedSdr.recording.minSec | quote }}
+            - name: MAX_REC_SEC
+              value: {{ .Values.unifiedSdr.recording.maxSec | quote }}
+            - name: TAIL_SEC
+              value: {{ .Values.unifiedSdr.recording.tailSec | quote }}
+            - name: NUM_DYN_FM
+              value: {{ .Values.unifiedSdr.slots.fm | quote }}
+            - name: NUM_DYN_CW
+              value: {{ .Values.unifiedSdr.slots.cw | quote }}
+            - name: NUM_DYN_ACARS
+              value: {{ .Values.unifiedSdr.slots.acars | quote }}
+            - name: SLOT_RECYCLE_SEC
+              value: {{ .Values.unifiedSdr.slots.recycleSec | quote }}
+          volumeMounts:
+            - name: artifacts
+              mountPath: /data
+            - name: dshm
+              mountPath: /dev/shm
+            - name: usb
+              mountPath: /dev/bus/usb
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-artifacts
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 1Gi}
+        - name: usb
+          hostPath: {path: {{ .Values.unifiedSdr.hostUsbPath }}}
+{{- end }}
