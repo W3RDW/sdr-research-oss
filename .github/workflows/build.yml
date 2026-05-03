@@ -52,14 +52,16 @@ jobs:
             context: decoders/eas
             image: sdr-research-eas
             platforms: linux/amd64,linux/arm64
-          - name: acars
-            context: decoders/acars
-            image: sdr-research-acars
-            platforms: linux/amd64
-          - name: vdl2
-            context: decoders/vdl2
-            image: sdr-research-vdl2
-            platforms: linux/amd64
+          # acars + vdl2 disabled — `acarsdec` and `dumpvdl2` are not in
+          # Debian apt; Dockerfiles need source-build. See decoders/{acars,vdl2}/README.md.
+          # - name: acars
+          #   context: decoders/acars
+          #   image: sdr-research-acars
+          #   platforms: linux/amd64
+          # - name: vdl2
+          #   context: decoders/vdl2
+          #   image: sdr-research-vdl2
+          #   platforms: linux/amd64
           - name: sstv
             context: decoders/sstv
             image: sdr-research-sstv

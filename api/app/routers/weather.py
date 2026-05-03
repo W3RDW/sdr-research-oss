@@ -13,7 +13,6 @@ import time as _time
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
 from typing import Any, Optional
-from urllib import error as _uerr
 from urllib import request as _ureq
 
 from fastapi import APIRouter, HTTPException, Query

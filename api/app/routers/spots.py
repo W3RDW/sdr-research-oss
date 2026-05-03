@@ -1,8 +1,7 @@
 """FT8/WSPR/FT4 spot browser and statistics."""
-import math
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, text, desc, distinct
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..database import get_db

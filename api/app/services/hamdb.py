@@ -9,7 +9,7 @@ Results are used to enrich Ollama tagging prompts with operator context.
 import json
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib import error, request
+from urllib import request
 
 from ..config import settings
 from ..models import CallsignInfo

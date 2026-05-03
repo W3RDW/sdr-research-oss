@@ -411,7 +411,7 @@ async def get_satellite_tle(norad_id: int):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"TLE fetch error: {exc}")
 
-    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
     if len(lines) < 3 or not lines[1].startswith("1 ") or not lines[2].startswith("2 "):
         raise HTTPException(status_code=502, detail=f"Invalid TLE response from Celestrak (got: {text[:120]!r})")
     data = {"name": lines[0], "line1": lines[1], "line2": lines[2]}

@@ -13,14 +13,14 @@ from sqlalchemy import text
 from ..config import settings
 from ..database import SessionLocal
 from ..models import Recording
-from .audio import compute_signal_db, generate_waveform_peaks, get_time_segments
+from .audio import compute_signal_db
 from .alerting import check_alerts
 from .hamdb import callsign_context_str, lookup_callsigns
 from .known_freqs import classify_frequency_group, frequency_group_label, lookup_known_freq
-from .repeater import lookup_repeater, repeater_label, repeater_tags
+from .repeater import lookup_repeater, repeater_label
 from .tagging import dump_ai_tags, extract_callsign_tags, has_all_ai_tags, is_no_speech_transcript, is_valid_callsign, parse_ai_tags
 from .metrics import (
-    indexer_files_indexed, indexer_files_deleted, indexer_cycle_duration,
+    indexer_files_indexed, indexer_cycle_duration,
     indexer_last_run, indexer_ollama_calls, indexer_ollama_errors,
     aprs_packets_indexed, recordings_total, recordings_with_transcript,
     recordings_with_ai_tags, recordings_with_repeater,
@@ -296,7 +296,7 @@ def detect_dtmf_tones(audio_path: str) -> str | None:
     Processes audio in 40ms windows with 50% overlap.
     """
     try:
-        import wave, array as _array
+        import wave
         with wave.open(audio_path, "rb") as wf:
             sr = wf.getframerate()
             nchannels = wf.getnchannels()
@@ -803,7 +803,6 @@ def maybe_set_frequency_metadata(db, recording):
     if recording.frequency_label is None:
         # Check user-defined DB labels first, then fall back to static known_freqs
         try:
-            from ..models import FrequencyLabel
             db_label = db.execute(
                 text(
                     "SELECT label FROM frequency_labels"
@@ -1075,6 +1074,7 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 from ..routers.events import broadcast_recording as _broadcast
                 _cs_tags = extract_callsign_tags(recording.transcript)
                 _ai_tags = parse_ai_tags(recording.ai_tags)
+                from ..routers.files import _transcript_status
                 _frequency_group = classify_frequency_group(
                     frequency_hz=recording.frequency_hz,
                     label=recording.frequency_label,
@@ -1820,10 +1820,6 @@ def _send_daily_digest():
         ).group_by(Recording.frequency_label).order_by(
             _func.count(Recording.id).desc()
         ).limit(5).all()
-        alerts_24h = db.query(_func.count(Recording.id)).join(
-            Recording,
-            (Recording.id == Recording.id),  # placeholder — use AlertHistory
-        ).scalar() or 0
         from ..services.alerting import _send_webhook
         _send_webhook({
             "type": "daily_digest",

@@ -807,6 +807,7 @@ async def get_digest_status():
 async def send_digest_now(db: Session = Depends(get_db)):
     """Manually trigger a daily digest webhook."""
     global _last_digest_sent
+    from ..services.indexer import _send_daily_digest
     _send_daily_digest()
     _last_digest_sent = datetime.utcnow()
     return {"status": "sent", "sent_at": _last_digest_sent.isoformat()}
@@ -1005,7 +1006,7 @@ async def _fetch_satellite_tles() -> list[dict]:
             req = urllib.request.Request(url, headers={"User-Agent": "SDRViewer/1.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 text = resp.read().decode().strip()
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
+            lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
             if len(lines) < 3 or not lines[1].startswith("1 ") or not lines[2].startswith("2 "):
                 continue
             results.append({

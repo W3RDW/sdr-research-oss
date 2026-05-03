@@ -1,6 +1,7 @@
 import csv
 import io
-from typing import Optional, List
+import json
+from typing import Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
