@@ -1,0 +1,86 @@
+{{- /*
+Decoder sub-templates. Each decoder is a Deployment that mounts the shared
+artifacts PVC, watches its input dir for new files, and writes decoded output
+back to the volume where the API indexer picks it up.
+
+All decoders share a uniform pattern:
+  - replicas: 1
+  - image: parameterized via decoders.<name>.image.{repository,tag}
+  - mounts the artifacts PVC at /data
+  - optional nodeSelector (for hardware-pinned ones)
+  - optional GPU (voice/Whisper)
+*/ -}}
+
+{{- range $name, $cfg := .Values.decoders }}
+{{- if $cfg.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}-decoder
+  labels:
+    {{- include "sdr-research.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-decoder
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdr-research
+      app.kubernetes.io/component: {{ $name }}-decoder
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sdr-research
+        app.kubernetes.io/component: {{ $name }}-decoder
+    spec:
+      {{- with $cfg.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $cfg.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}-decoder
+          image: "{{ $cfg.image.repository }}:{{ $cfg.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" $cfg.image.pullPolicy }}
+          {{- with $cfg.command }}
+          command: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cfg.args }}
+          args: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - {name: STATION_CALLSIGN, value: {{ $.Values.station.callsign | quote }} }
+            - {name: STATION_GRID, value: {{ $.Values.station.grid | quote }} }
+            - {name: STATION_LAT, value: {{ $.Values.station.latitude | quote }} }
+            - {name: STATION_LON, value: {{ $.Values.station.longitude | quote }} }
+            {{- if eq $name "voice" }}
+            - {name: WHISPER_MODEL, value: {{ default "base.en" $cfg.whisperModel | quote }} }
+            - {name: WHISPER_DEVICE, value: {{ ternary "cuda" "cpu" (default false $cfg.gpu) | quote }} }
+            {{- end }}
+            {{- range $k, $v := $cfg.env }}
+            - {name: {{ $k | quote }}, value: {{ $v | quote }} }
+            {{- end }}
+          volumeMounts:
+            - name: artifacts
+              mountPath: /data
+          {{- with $cfg.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if and (eq $name "voice") $cfg.gpu }}
+          # Whisper GPU — needs nvidia-device-plugin in the cluster.
+          # Adds the resources stanza for nvidia.com/gpu if not already set.
+          {{- if not $cfg.resources }}
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          {{- end }}
+          {{- end }}
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ $.Release.Name }}-artifacts
+{{- end }}
+{{- end }}

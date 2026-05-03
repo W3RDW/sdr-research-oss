@@ -142,28 +142,48 @@ alerts:
   existingSecret: ""      # secret name; key 'alert-webhook-url'
 
 # ─── Optional decoders ───────────────────────────────────────────────────
+# Each decoder mounts the same artifacts PVC as unified-sdr + api, so it
+# reads from the SDR's /data/audio/ output and writes to /data/text/<type>/
+# where the api indexer picks it up.
+#
+# Per-decoder knobs:
+#   enabled       master switch
+#   image.{repository,tag,pullPolicy}
+#   nodeSelector  pin to a specific node (rare — usually only needed for GPU)
+#   tolerations   for tainted nodes
+#   resources     k8s resource requests/limits
+#   env           map of extra env vars
+#   command/args  override the image entrypoint
 decoders:
   aprs:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-aprs, tag: latest }
+    image: {repository: ghcr.io/w3rdw/sdr-research-aprs, tag: "0.1.0"}
   cw:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-cw, tag: latest }
+    image: {repository: ghcr.io/w3rdw/sdr-research-cw, tag: "0.1.0"}
   voice:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-voice, tag: latest }
-    gpu: false
-    nodeSelector: {}
-    whisperModel: base.en
+    image: {repository: ghcr.io/w3rdw/sdr-research-voice, tag: "0.1.0"}
+    gpu: false               # set true to request nvidia.com/gpu: 1
+    whisperModel: base.en    # tiny / base / small / medium / large-v3
+    nodeSelector: {}         # e.g. {nvidia.com/gpu.present: "true"}
   pager:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-pager, tag: latest }
-  acars:
+    image: {repository: ghcr.io/w3rdw/sdr-research-pager, tag: "0.1.0"}
+  eas:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-acars, tag: latest }
-  vdl2:
-    enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-vdl2, tag: latest }
+    image: {repository: ghcr.io/w3rdw/sdr-research-eas, tag: "0.1.0"}
   sstv:
     enabled: false
-    image: { repository: ghcr.io/w3rdw/sdr-research-sstv, tag: latest }
+    image: {repository: ghcr.io/w3rdw/sdr-research-sstv, tag: "0.1.0"}
+  spectrum-exporter:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-spectrum-exporter, tag: "0.1.0"}
+  # acars + vdl2 not yet shipped — apt packages don't exist in Debian.
+  # See decoders/{acars,vdl2}/README.md for source-build TODOs.
+  acars:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-acars, tag: latest}
+  vdl2:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-vdl2, tag: latest}

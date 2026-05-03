@@ -66,7 +66,7 @@ services:
       - sdr-artifacts:/data
       - api-cache:/cache
     ports:
-      - "8000:8000"
+      - "${API_HOST_PORT:-8000}:8000"
 
   ui:
     image: ${UI_IMAGE:-ghcr.io/w3rdw/sdr-research-ui:latest}
@@ -76,7 +76,7 @@ services:
     depends_on:
       - api
     ports:
-      - "8080:80"
+      - "${UI_HOST_PORT:-8080}:80"
 
   # ─── SDR capture (privileged for USB) ──────────────────────────────────
   # Requires: SDR plugged into the host. See docs/hardware-matrix.md.

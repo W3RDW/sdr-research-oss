@@ -19,9 +19,14 @@ FROM nginx:alpine
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# nginx config is rendered from a template at container start so deployers can
+# point /api/ at any backend (compose: http://api:8000, Helm: http://<release>-api:8000, etc.)
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+
+ENV API_UPSTREAM=http://api:8000
 
 EXPOSE 80
 
+# nginx:alpine ships /docker-entrypoint.d/20-envsubst-on-templates.sh which
+# substitutes env vars into anything in /etc/nginx/templates/ at startup.
 CMD ["nginx", "-g", "daemon off;"]
