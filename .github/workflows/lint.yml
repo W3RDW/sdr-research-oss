@@ -16,6 +16,22 @@ jobs:
       - run: pip install ruff
       - run: ruff check api/
 
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Install only what the import smoke + health tests need; pulling in
+      # librosa/scipy/matplotlib here would be ~500MB. Tests stub anything
+      # heavy via env vars (sqlite in-memory, no Whisper, no Ollama).
+      - run: pip install -e '.[dev]' fastapi uvicorn sqlalchemy pydantic-settings prometheus-client prometheus-fastapi-instrumentator
+      - run: pytest tests/ -v
+
   typescript:
     runs-on: ubuntu-latest
     defaults:
@@ -29,8 +45,7 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
-      # `npm run lint` intentionally omitted — eslint not yet wired into deps.
-      # See issue: add eslint config + flat-config + plugin:react-hooks/recommended.
+      - run: npm run lint
       - run: npm run build
 
   helm:

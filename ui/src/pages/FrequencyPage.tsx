@@ -265,25 +265,10 @@ function FrequencyPage() {
     staleTime: 60_000,
   });
 
-  if (!frequencyHz || isNaN(frequencyHz)) {
-    return <div className="text-red-400">Invalid frequency.</div>;
-  }
-
-  if (isLoading) {
-    return <div className="text-center py-8">Loading…</div>;
-  }
-
-  if (error || !data) {
-    return (
-      <div className="text-red-400">Failed to load frequency stats: {String(error)}</div>
-    );
-  }
-
-  const totalByMode = Object.values(data.by_mode).reduce((a, b) => a + b, 0);
-
-  // ── Signal strength analysis ──────────────────────────────────────
+  // ── Signal strength analysis (must run on every render — Rules of Hooks) ──
   const signalAnalysis = useMemo(() => {
-    const withSignal = data.recent_recordings.filter(
+    const recordings = data?.recent_recordings ?? [];
+    const withSignal = recordings.filter(
       (r) => r.signal_db != null && isFinite(r.signal_db!)
     );
     if (withSignal.length === 0) return null;
@@ -331,7 +316,23 @@ function FrequencyPage() {
       .sort((a, b) => a.sortKey - b.sortKey);
 
     return { avg, peak, floor, dynamicRange, hourlyData, sampleCount: withSignal.length };
-  }, [data.recent_recordings]);
+  }, [data?.recent_recordings]);
+
+  if (!frequencyHz || isNaN(frequencyHz)) {
+    return <div className="text-red-400">Invalid frequency.</div>;
+  }
+
+  if (isLoading) {
+    return <div className="text-center py-8">Loading…</div>;
+  }
+
+  if (error || !data) {
+    return (
+      <div className="text-red-400">Failed to load frequency stats: {String(error)}</div>
+    );
+  }
+
+  const totalByMode = Object.values(data.by_mode).reduce((a, b) => a + b, 0);
 
   return (
     <div>
