@@ -94,11 +94,22 @@ need a manual `ALTER TABLE`.
 
 ## Ollama tagging
 
+Auto-tags voice transcripts with topic / intent / sentiment hints. See the
+[setup walkthrough](ollama-setup.md) for getting Ollama running alongside
+the stack.
+
 | Var | Default | Notes |
 |---|---|---|
-| `OLLAMA_ENABLED` | `false` | |
-| `OLLAMA_URL` | `http://ollama:11434` | |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Any model your Ollama instance has pulled. |
+| `OLLAMA_ENABLED` | `false` | Master switch. |
+| `OLLAMA_URL` | `http://ollama:11434` | Base URL of your Ollama server. |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Any model the server has pulled. Smaller = faster. |
+| `OLLAMA_TIMEOUT_SECONDS` | `20` | Per-request timeout. Raise on CPU. |
+| `OLLAMA_MAX_TAGS` | `8` | Cap on tags per recording. |
+| `OLLAMA_MAX_PER_CYCLE` | `40` | Cap on Ollama calls per indexer pass. |
+
+The indexer has a circuit breaker: 3 consecutive failures opens it for 5
+minutes. Failures + call counts are exposed as Prometheus metrics
+(`indexer_ollama_calls`, `indexer_ollama_errors`).
 
 ## APRS-IS upstream
 

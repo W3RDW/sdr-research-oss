@@ -101,7 +101,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full list.
 
 - **[RepeaterBook](https://www.repeaterbook.com/api/token_request.php)** — request an API key, set `REPEATERBOOK_API_KEY`, `REPEATERBOOK_USER_AGENT` (must match the approved value), and `REPEATERBOOK_STATES` (comma-separated state codes to sync, e.g. `OH,IN,KY`). The API will sync repeaters in your radius nightly and label matching recordings. Full walkthrough: [`docs/repeaterbook-setup.md`](docs/repeaterbook-setup.md).
 - **[Whisper](https://github.com/openai/whisper)** — CPU works, GPU is ~50× faster. Set `WHISPER_DEVICE=cuda` if you have nvidia-container-toolkit installed.
-- **[Ollama](https://ollama.com/)** — runs locally; the API will POST transcripts and tag them with topic/intent/sentiment hints.
+- **[Ollama](https://ollama.com/)** — runs locally; the API POSTs transcripts and tags them with topic/intent/sentiment hints. Set `OLLAMA_ENABLED=true` and `OLLAMA_URL`. Built-in circuit breaker + per-cycle cap + Prometheus metrics. Full walkthrough: [`docs/ollama-setup.md`](docs/ollama-setup.md).
 - **APRS-IS** — outbound publishing of decoded packets to the APRS-IS network. Set `APRS_IS_CALLSIGN` + `APRS_IS_PASSCODE`.
 
 ---

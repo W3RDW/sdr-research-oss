@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     cache_path: str = "/cache"
     auto_delete_no_speech: bool = False
     ollama_enabled: bool = False
-    ollama_url: str = "http://ollama.ollama.svc.cluster.local:11434"
+    ollama_url: str = "http://ollama:11434"
     ollama_model: str = "llama3.1:8b"
     ollama_timeout_seconds: float = 20.0
     ollama_max_tags: int = 8
@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     # RepeaterBook sync
     repeaterbook_enabled: bool = False
     repeaterbook_email: str = ""
-    repeaterbook_latitude: float = 39.0
-    repeaterbook_longitude: float = -77.0
+    repeaterbook_latitude: float = 0.0
+    repeaterbook_longitude: float = 0.0
     repeaterbook_radius_miles: int = 75
-    repeaterbook_states: str = "MD,VA,DC,PA"
+    repeaterbook_states: str = ""
     repeaterbook_sync_hours: int = 24
 
     # Alerting

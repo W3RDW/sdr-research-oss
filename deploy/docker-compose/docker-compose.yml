@@ -56,6 +56,12 @@ services:
       ALERT_CALLSIGNS: ${ALERT_CALLSIGNS:-}
       ALERT_KEYWORDS: ${ALERT_KEYWORDS:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-20}
+      OLLAMA_MAX_TAGS: ${OLLAMA_MAX_TAGS:-8}
+      OLLAMA_MAX_PER_CYCLE: ${OLLAMA_MAX_PER_CYCLE:-40}
     volumes:
       - sdr-artifacts:/data
       - api-cache:/cache
@@ -116,6 +122,27 @@ services:
   #   volumes:
   #     - sdr-artifacts:/data
 
+  # ─── Optional: Ollama (local LLM for transcript tagging) ──────────────
+  # Uncomment to run Ollama in the same compose stack. Set OLLAMA_ENABLED=true
+  # in .env. First start: pull a model with
+  #   docker compose exec ollama ollama pull llama3.1:8b
+  # See docs/ollama-setup.md for full walkthrough.
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama-models:/root/.ollama
+  #   ports:
+  #     - "11434:11434"   # exposed so you can manage it from the host
+  #   # For GPU acceleration (NVIDIA + nvidia-container-toolkit):
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: 1
+  #   #           capabilities: [gpu]
+
   # ─── Optional: Whisper voice transcription ─────────────────────────────
   # voice-decoder:
   #   image: ghcr.io/w3rdw/sdr-research-voice:latest
@@ -140,3 +167,4 @@ volumes:
   pgdata:
   sdr-artifacts:
   api-cache:
+  # ollama-models:    # uncomment when running the ollama service above

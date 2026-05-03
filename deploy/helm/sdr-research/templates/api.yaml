@@ -98,6 +98,20 @@ spec:
                   name: {{ default (printf "%s-secrets" .Release.Name) .Values.alerts.existingSecret }}
                   key: alert-webhook-url
             {{- end }}
+            {{- if .Values.ollama.enabled }}
+            - name: OLLAMA_ENABLED
+              value: "true"
+            - name: OLLAMA_URL
+              value: {{ .Values.ollama.url | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.ollama.model | quote }}
+            - name: OLLAMA_TIMEOUT_SECONDS
+              value: {{ .Values.ollama.timeoutSeconds | quote }}
+            - name: OLLAMA_MAX_TAGS
+              value: {{ .Values.ollama.maxTags | quote }}
+            - name: OLLAMA_MAX_PER_CYCLE
+              value: {{ .Values.ollama.maxPerCycle | quote }}
+            {{- end }}
             - name: CACHE_PATH
               value: /cache
             - name: TEXT_BASE_PATH

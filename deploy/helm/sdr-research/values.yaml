@@ -122,6 +122,17 @@ repeaterbook:
   states: ""              # e.g. "OH,IN,KY"
   syncHours: 24
 
+# ─── Ollama (optional — local LLM transcript tagging) ───────────────────
+# See docs/ollama-setup.md. The chart does NOT install Ollama itself; you
+# point it at an existing instance (in-cluster or external).
+ollama:
+  enabled: false
+  url: "http://ollama:11434"
+  model: "llama3.1:8b"
+  timeoutSeconds: 20
+  maxTags: 8
+  maxPerCycle: 40
+
 # ─── Alerting (optional webhook) ─────────────────────────────────────────
 alerts:
   enabled: false
