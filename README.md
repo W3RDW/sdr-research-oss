@@ -157,10 +157,11 @@ CI builds + pushes to `ghcr.io/<owner>/sdr-research-{api,ui,unified-sdr,...}` on
 
 This is freshly extracted from a private deployment. Known gaps:
 
-- [ ] Decoder Helm sub-templates (only the unified-sdr is wired in)
+- [x] Decoder Helm sub-templates (aprs, cw, voice, pager, eas, sstv, spectrum-exporter — wired in v0.1.1)
 - [ ] FT8/WSPR decoder script (interface documented; implementation TBD)
 - [ ] Database migrations (currently auto-creates tables; no Alembic yet)
-- [ ] CI is configured but unverified end-to-end
+- [ ] ACARS + VDL2 Dockerfiles (apt packages missing — need source-build steps)
+- [x] CI verified end-to-end via docker-compose smoke test (api+ui+postgres boot, /api/v1/health responds via UI proxy)
 
 PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

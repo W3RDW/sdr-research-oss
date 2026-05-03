@@ -49,13 +49,32 @@ ingress:
 
 ## Decoders
 
+Enable any combination — they all share the artifacts PVC with `unified-sdr`
+and the API:
+
 ```yaml
 decoders:
-  aprs:    {enabled: true}
-  voice:   {enabled: true, gpu: true, nodeSelector: {nvidia.com/gpu.present: "true"}}
+  aprs:              {enabled: true}
+  cw:                {enabled: true}
+  pager:             {enabled: true}
+  eas:               {enabled: true}
+  sstv:              {enabled: true}
+  spectrum-exporter: {enabled: true}
+  voice:
+    enabled: true
+    gpu: true                              # request nvidia.com/gpu: 1
+    whisperModel: medium.en
+    nodeSelector: {nvidia.com/gpu.present: "true"}
 ```
 
-(decoder templates are not yet bundled — track GitHub issue #1.)
+ACARS + VDL2 are not yet wired (apt packages don't exist in Debian). See
+`decoders/{acars,vdl2}/README.md` for the source-build TODO.
+
+Per-decoder, you can also override:
+- `image.tag` to pin a specific version (default: matches chart appVersion)
+- `nodeSelector` / `tolerations` to pin to specific nodes
+- `resources` for CPU/memory limits
+- `env` (map) for custom environment variables
 
 ## Uninstall
 
