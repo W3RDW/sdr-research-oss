@@ -797,6 +797,72 @@ def should_auto_delete_no_speech(transcript: str | None) -> bool:
     return settings.auto_delete_no_speech and is_no_speech_transcript(transcript)
 
 
+# Threshold below which a "failed CW decode" recording is treated as noise
+# and auto-deleted. Real CW transmissions worth keeping are typically >3s;
+# 1-2s hits at narrow bandwidth in 144.1-144.3 MHz are usually SSB voice
+# fragments misclassified by the unified-sdr's bandwidth-based slot picker.
+_CW_FAILED_MIN_KEEP_SECONDS = 3.0
+_CW_FAILED_MARKERS = ("[no decodable cw]", "[cw decode failed]", "")
+
+# Morse characters made up entirely of dots: E (.), I (..), S (...),
+# H (....), and 5 (.....). A CW decoder fed pure noise emits long runs
+# of dots and chunks them into these chars. Any "transcript" that is
+# only these characters (plus whitespace) over an appreciable length is
+# decoder garbage, not a real Morse transmission.
+_CW_DOTS_ONLY_CHARS = frozenset("EISH5")
+_CW_NOISE_MIN_LENGTH = 8  # below this we keep — could be a legit "SOS" / "EE" / "HI HI"
+
+
+def _cw_transcript_is_failed(transcript: str | None) -> bool:
+    if transcript is None:
+        return True
+    stripped = transcript.strip().lower()
+    return stripped in _CW_FAILED_MARKERS
+
+
+def _cw_transcript_is_dot_noise(transcript: str | None) -> bool:
+    """True if the transcript is a long run of dots-only Morse chars only.
+
+    Filters out the gibberish CW decoder output you get when running on
+    pure RF noise — long strings like "SEIS EES5EIIHEEIHESSEEEESEES…".
+    Real CW transmissions almost always contain at least one non-dot
+    character (T, N, A, K, M, O, R, etc.) — even basic abbreviations
+    like "DE", "QRZ", "73" use them. A purely dots-only string of
+    appreciable length is noise.
+    """
+    if transcript is None:
+        return False
+    stripped = transcript.strip().upper()
+    # Strip whitespace for char check; whitespace is fine inside CW
+    no_space = re.sub(r"\s+", "", stripped)
+    if len(no_space) < _CW_NOISE_MIN_LENGTH:
+        return False
+    return all(c in _CW_DOTS_ONLY_CHARS for c in no_space)
+
+
+def should_auto_delete_failed_cw(mode: str, duration_seconds: float | None,
+                                 transcript: str | None) -> bool:
+    """True if this CW recording should be auto-deleted as noise.
+
+    Two cases are caught:
+    1. Short (<3s) recordings where the decoder failed entirely (empty
+       transcript or failure marker). These are usually narrow SSB voice
+       fragments at 144.1-144.3 MHz misclassified into a CW slot by the
+       unified-sdr's bandwidth-based mode picker.
+    2. ANY duration where the "decoded" transcript is dot-only-Morse
+       gibberish (E/I/S/H/5 only, see _cw_transcript_is_dot_noise).
+       These are CW decoder output from pure RF noise and surface in
+       the UI as "Similar transcripts" full of garbage.
+    """
+    if mode != "cw":
+        return False
+    if _cw_transcript_is_dot_noise(transcript):
+        return True
+    if duration_seconds is None or duration_seconds >= _CW_FAILED_MIN_KEEP_SECONDS:
+        return False
+    return _cw_transcript_is_failed(transcript)
+
+
 def maybe_set_frequency_metadata(db, recording):
     if recording.frequency_hz is None:
         return
@@ -939,6 +1005,15 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                     db.commit()
                     print(f"Auto-deleted no-speech recording: {filename}")
                     continue
+                if should_auto_delete_failed_cw(existing.mode, existing.duration_seconds, existing.transcript):
+                    safe_unlink(existing.audio_path)
+                    safe_unlink(existing.text_path)
+                    safe_unlink(existing.waveform_cached)
+                    safe_unlink(existing.spectrogram_cached)
+                    db.delete(existing)
+                    db.commit()
+                    print(f"Auto-deleted short failed-CW recording: {filename} ({existing.duration_seconds:.1f}s)")
+                    continue
                 if existing.transcript is None:
                     transcript = read_transcript(text_path)
                     if transcript:
@@ -978,6 +1053,14 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 safe_unlink(str(wav_file))
                 safe_unlink(text_path)
                 print(f"Auto-deleted no-speech recording: {filename}")
+                continue
+            # Auto-delete short CW recordings whose decoder failed — usually
+            # narrow SSB voice fragments misclassified into a CW slot by the
+            # unified-sdr's bandwidth-based mode picker.
+            if should_auto_delete_failed_cw(mode, duration, transcript):
+                safe_unlink(str(wav_file))
+                safe_unlink(text_path)
+                print(f"Auto-deleted short failed-CW recording ({duration:.1f}s): {filename}")
                 continue
             effective_mode = mode
             _rec_freq = metadata.get("frequency_hz")

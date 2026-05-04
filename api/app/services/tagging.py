@@ -60,6 +60,25 @@ _CALLSIGN_FULL = re.compile(
 )
 
 
+# Morse characters made up entirely of dots. CW decoders fed pure noise emit
+# long runs of dots that get chunked into these letters/digits and look
+# superficially like callsigns (e.g. I5HEH, S5II, EE5HE, EI5SISI). A real
+# callsign almost always contains at least one character outside this set.
+_CW_DOTS_ONLY_CHARS = frozenset("EISH5")
+
+
+def _looks_like_cw_dot_noise(upper: str) -> bool:
+    """True if the candidate consists only of Morse-dots-only characters.
+
+    Real US/intl amateur prefixes (K, W, N, A, plus most international
+    prefixes like G, F, DL, JA, VE, VK, etc.) introduce non-dot letters,
+    so this filter rarely false-positives. Worst case it would skip the
+    rare callsigns like W1S, K5I, etc. — but those are 3 chars and already
+    fail the 4+ char length check anyway.
+    """
+    return all(c in _CW_DOTS_ONLY_CHARS for c in upper)
+
+
 def is_valid_callsign(cs: str) -> bool:
     """Validate that a string looks like a real amateur radio callsign.
 
@@ -69,6 +88,8 @@ def is_valid_callsign(cs: str) -> bool:
     - Must not be in the blacklist
     - Must contain at least one digit (sanity check)
     - Must not have all-same-letter suffix (e.g. Q9QQQ → reject)
+    - Must not consist only of Morse-dots-only chars (E/I/S/H/5) — those
+      are CW decoder hallucinations from noise (see _looks_like_cw_dot_noise)
     """
     upper = cs.strip().upper()
     if len(upper) < 4:
@@ -87,19 +108,37 @@ def is_valid_callsign(cs: str) -> bool:
         suffix = m.group(1)
         if len(suffix) >= 3 and len(set(suffix)) == 1:
             return False
+    # Reject if the whole string is dots-only Morse chars (CW noise)
+    if _looks_like_cw_dot_noise(upper):
+        return False
     return True
 
-NO_SPEECH_PATTERN = re.compile(
-    r"^\s*(?:"
+# Single-phrase patterns. Used both as a one-shot match and as a per-sentence
+# match against multi-sentence Whisper hallucinations (e.g. "Thank you for
+# watching. Thanks for watching!"). Whisper trained on a lot of YouTube
+# closing-banter and emits these on silent / near-silent input.
+_NO_SPEECH_PHRASE = (
     r"\[?\s*no speech detected\s*\]?"
     r"|\[?\s*recording too long for auto-transcribe\s*\]?"
     r"|[^\w\s]+"
-    r"|thanks?\s+(?:you\s+)?(?:for\s+)?(?:watching|listening|joining|tuning\s+in|being\s+here)\.?"
-    r"|(?:thank\s+you|bye|goodbye|see\s+you)(?:\s+for\s+(?:watching|listening|joining))?\.?"
-    r"|you\.?"
+    r"|thanks?\s+(?:you\s+)?(?:so\s+much\s+)?(?:everyone\s+)?(?:for\s+)?(?:watching|listening|joining|tuning\s+in|being\s+here)"
+    r"|(?:thank\s+you|thanks)(?:\s+(?:so\s+much|very\s+much|everyone|all))?(?:\s+for\s+(?:watching|listening|joining|your\s+attention))?"
+    r"|(?:bye|goodbye|see\s+you|see\s+ya)(?:\s+(?:later|next\s+time|everyone|all|guys))?"
+    r"|(?:(?:please|don'?t\s+forget\s+to|make\s+sure\s+to|be\s+sure\s+to|remember\s+to)\s+)?(?:like|subscribe|hit\s+(?:the\s+)?(?:bell|subscribe\s+button))(?:\s+and\s+(?:like|subscribe))*"
+    r"|you"
     r"|\[(?:music|applause|laughter|silence|noise|inaudible)[^\]]*\]"
     r"|\[?\s*\[?(?:BLANK_AUDIO|blank\s*audio)\]?\s*\]?"
-    r")\s*$",
+)
+
+NO_SPEECH_PATTERN = re.compile(
+    r"^\s*(?:" + _NO_SPEECH_PHRASE + r")\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+# A whole transcript made entirely of (one or more) hallucination phrases,
+# joined by punctuation and whitespace.
+_NO_SPEECH_FULL = re.compile(
+    r"^\s*(?:(?:" + _NO_SPEECH_PHRASE + r")\s*[.!?]?\s*)+$",
     re.IGNORECASE,
 )
 
@@ -166,9 +205,16 @@ def extract_callsign_tags(transcript: Optional[str]) -> List[str]:
 
 
 def is_no_speech_transcript(transcript: Optional[str]) -> bool:
+    """True if the transcript is empty content / a Whisper hallucination.
+
+    Single-phrase match takes the fast path; multi-phrase concatenations like
+    "Thank you for watching. Thanks for watching!" are caught by _NO_SPEECH_FULL.
+    """
     if not transcript:
         return False
-    return NO_SPEECH_PATTERN.match(transcript) is not None
+    if NO_SPEECH_PATTERN.match(transcript) is not None:
+        return True
+    return _NO_SPEECH_FULL.match(transcript) is not None
 
 
 def parse_ai_tags(raw: Optional[str]) -> List[str]:
