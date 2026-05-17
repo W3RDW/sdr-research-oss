@@ -30,12 +30,17 @@ spec:
             - {name: SAMPLE_RATE, value: "2400000"}
             - {name: DWELL_CENTER_HZ, value: "146000000"}
             - {name: FIXED_MONITOR_HZ, value: "146520000"}
+            - {name: SCAN_CENTERS, value: "[]"}
+            - {name: DWELL_SEC, value: "60"}
+            - {name: SCAN_SEC, value: "5"}
             - {name: RF_GAIN, value: "40"}
             - {name: PPM_CORRECTION, value: "0"}
             - {name: RF_SQUELCH_DB, value: "-50"}
             - {name: SQUELCH_OPEN_DB, value: "-50"}
             - {name: SQUELCH_CLOSE_DB, value: "-55"}
             - {name: ENERGY_THRESH_DB, value: "10"}
+            - {name: FM_RECORD_BANDS_HZ, value: "144300000-148000000,150000000-162000000,222000000-225000000,433000000-450000000"}
+            - {name: CW_RECORD_BANDS_HZ, value: "144000000-144150000,432000000-432100000"}
             - {name: MIN_REC_SEC, value: "0.5"}
             - {name: MAX_REC_SEC, value: "120"}
             - {name: TAIL_SEC, value: "1.5"}

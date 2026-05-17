@@ -72,9 +72,12 @@ after `tb.start()`.
 
 ### Energy detector + per-slot squelch
 
-The FFT detector runs every `FFT_INTERVAL` seconds, finds peaks above
-`ENERGY_THRESH_DB`, and assigns them to free demodulator slots. Each slot has
-its own squelch, so quiet channels don't waste recording space.
+The FFT detector runs every `FFT_INTERVAL` seconds and finds peaks above
+`ENERGY_THRESH_DB`. Recorder assignment uses configured band-plan ranges:
+FM/pager/repeater ranges are routed to FM slots, and CW is only eligible in
+explicit CW subbands. This avoids treating quiet FM repeater carriers as CW
+just because the occupied bandwidth is narrow. Each slot has its own squelch,
+so quiet channels don't waste recording space.
 
 ### Decoders as separate containers
 

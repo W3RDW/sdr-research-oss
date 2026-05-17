@@ -799,8 +799,8 @@ def should_auto_delete_no_speech(transcript: str | None) -> bool:
 
 # Threshold below which a "failed CW decode" recording is treated as noise
 # and auto-deleted. Real CW transmissions worth keeping are typically >3s;
-# 1-2s hits at narrow bandwidth in 144.1-144.3 MHz are usually SSB voice
-# fragments misclassified by the unified-sdr's bandwidth-based slot picker.
+# 1-2s hits at narrow bandwidth in 144.1-144.3 MHz are usually weak-signal
+# fragments or old routing artifacts misclassified into CW slots.
 _CW_FAILED_MIN_KEEP_SECONDS = 3.0
 _CW_FAILED_MARKERS = ("[no decodable cw]", "[cw decode failed]", "")
 
@@ -846,9 +846,8 @@ def should_auto_delete_failed_cw(mode: str, duration_seconds: float | None,
 
     Two cases are caught:
     1. Short (<3s) recordings where the decoder failed entirely (empty
-       transcript or failure marker). These are usually narrow SSB voice
-       fragments at 144.1-144.3 MHz misclassified into a CW slot by the
-       unified-sdr's bandwidth-based mode picker.
+       transcript or failure marker). These are usually weak-signal fragments
+       at 144.1-144.3 MHz or old routing artifacts misclassified into a CW slot.
     2. ANY duration where the "decoded" transcript is dot-only-Morse
        gibberish (E/I/S/H/5 only, see _cw_transcript_is_dot_noise).
        These are CW decoder output from pure RF noise and surface in
@@ -1055,8 +1054,8 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 print(f"Auto-deleted no-speech recording: {filename}")
                 continue
             # Auto-delete short CW recordings whose decoder failed — usually
-            # narrow SSB voice fragments misclassified into a CW slot by the
-            # unified-sdr's bandwidth-based mode picker.
+            # weak-signal fragments or old routing artifacts misclassified
+            # into a CW slot.
             if should_auto_delete_failed_cw(mode, duration, transcript):
                 safe_unlink(str(wav_file))
                 safe_unlink(text_path)

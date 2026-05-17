@@ -44,6 +44,8 @@ need a manual `ALTER TABLE`.
 | `SQUELCH_OPEN_DB` | `-50` | Audio squelch open threshold. |
 | `SQUELCH_CLOSE_DB` | `-55` | Audio squelch close threshold (hysteresis). |
 | `ENERGY_THRESH_DB` | `10` | FFT peak detection above noise floor. **Don't raise above 10** — breaks FM. |
+| `FM_RECORD_BANDS_HZ` | `144300000-148000000,150000000-162000000,222000000-225000000,433000000-450000000` | Comma-separated ranges routed to FM/pager voice recorders. FM bands are preferred over the bandwidth heuristic so quiet repeaters are not filed as CW. |
+| `CW_RECORD_BANDS_HZ` | `144000000-144150000,432000000-432100000` | Comma-separated ranges eligible for dynamic CW recording. Set to empty or `NUM_DYN_CW=0` if you do not want CW captures. |
 | `MIN_REC_SEC` | `0.5` | Discard recordings shorter than this. |
 | `MAX_REC_SEC` | `120` | Force-close recordings longer than this. |
 | `TAIL_SEC` | `1.5` | Keep recording for N sec after squelch closes. |

@@ -39,6 +39,12 @@ spec:
               value: {{ .Values.unifiedSdr.dwellCenterHz | quote }}
             - name: FIXED_MONITOR_HZ
               value: {{ .Values.unifiedSdr.fixedMonitorHz | quote }}
+            - name: SCAN_CENTERS
+              value: {{ .Values.unifiedSdr.scanCenters | quote }}
+            - name: DWELL_SEC
+              value: {{ .Values.unifiedSdr.dwellSec | quote }}
+            - name: SCAN_SEC
+              value: {{ .Values.unifiedSdr.scanSec | quote }}
             - name: RF_GAIN
               value: {{ .Values.unifiedSdr.rfGain | quote }}
             - name: PPM_CORRECTION
@@ -51,6 +57,10 @@ spec:
               value: {{ .Values.unifiedSdr.squelch.closeDb | quote }}
             - name: ENERGY_THRESH_DB
               value: {{ .Values.unifiedSdr.squelch.energyThreshDb | quote }}
+            - name: FM_RECORD_BANDS_HZ
+              value: {{ .Values.unifiedSdr.fmRecordBands | quote }}
+            - name: CW_RECORD_BANDS_HZ
+              value: {{ .Values.unifiedSdr.cwRecordBands | quote }}
             - name: MIN_REC_SEC
               value: {{ .Values.unifiedSdr.recording.minSec | quote }}
             - name: MAX_REC_SEC

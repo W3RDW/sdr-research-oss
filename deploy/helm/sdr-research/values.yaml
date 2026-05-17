@@ -91,6 +91,9 @@ unifiedSdr:
   sampleRate: 2400000
   dwellCenterHz: 146000000
   fixedMonitorHz: 146520000
+  scanCenters: "[]"
+  dwellSec: 60
+  scanSec: 5
   rfGain: 40
   ppmCorrection: 0
   squelch:
@@ -98,6 +101,10 @@ unifiedSdr:
     openDb: -50
     closeDb: -55
     energyThreshDb: 10
+  # Comma-separated ranges. FM bands are preferred over raw FFT bandwidth so
+  # quiet repeaters are not filed as CW. Empty cwRecordBands disables CW routing.
+  fmRecordBands: "144300000-148000000,150000000-162000000,222000000-225000000,433000000-450000000"
+  cwRecordBands: "144000000-144150000,432000000-432100000"
   recording:
     minSec: 0.5
     maxSec: 120

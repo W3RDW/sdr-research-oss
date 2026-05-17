@@ -6,6 +6,12 @@ fixed voice monitor, dynamic FM channels, and dynamic CW channels.
 import os, sys, json, time, wave, struct, threading, math
 import numpy as np
 from gnuradio import gr, blocks, filter, analog, fft
+from bandplan import (
+    DEFAULT_CW_RECORD_BANDS,
+    DEFAULT_FM_RECORD_BANDS,
+    classify_peak_for_recording,
+    parse_frequency_ranges,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration (all overridable via environment)
@@ -17,17 +23,17 @@ RTL_TCP_PORT   = int(_rtl_port_raw.rsplit(":", 1)[-1].strip("/"))
 #   soapy=0,remote=airspy-soapy.sdr-research.svc.cluster.local:55132,driver=airspy
 OSMOSDR_ARGS   = os.getenv("OSMOSDR_ARGS", "")
 SAMPLE_RATE    = int(os.getenv("SAMPLE_RATE", "2400000"))
-DWELL_CENTER   = int(os.getenv("DWELL_CENTER_HZ", "145000000"))
-SCAN_CENTERS   = json.loads(os.getenv("SCAN_CENTERS", "[147000000, 432000000]"))
-DWELL_SEC      = float(os.getenv("DWELL_SEC", "55"))
-SCAN_SEC       = float(os.getenv("SCAN_SEC", "2"))
+DWELL_CENTER   = int(os.getenv("DWELL_CENTER_HZ", "146000000"))
+SCAN_CENTERS   = json.loads(os.getenv("SCAN_CENTERS", "[]"))
+DWELL_SEC      = float(os.getenv("DWELL_SEC", "60"))
+SCAN_SEC       = float(os.getenv("SCAN_SEC", "5"))
 
-SQUELCH_OPEN   = float(os.getenv("SQUELCH_OPEN_DB", "-35"))
-SQUELCH_CLOSE  = float(os.getenv("SQUELCH_CLOSE_DB", "-40"))
+SQUELCH_OPEN   = float(os.getenv("SQUELCH_OPEN_DB", "-50"))
+SQUELCH_CLOSE  = float(os.getenv("SQUELCH_CLOSE_DB", "-55"))
 TAIL_SEC       = float(os.getenv("TAIL_SEC", "1.5"))
 MIN_REC_SEC    = float(os.getenv("MIN_REC_SEC", "0.5"))
 MAX_REC_SEC    = float(os.getenv("MAX_REC_SEC", "120"))
-RF_SQUELCH_DB  = float(os.getenv("RF_SQUELCH_DB", "-20"))
+RF_SQUELCH_DB  = float(os.getenv("RF_SQUELCH_DB", "-50"))
 
 FFT_SIZE       = int(os.getenv("FFT_SIZE", "4096"))
 FFT_INTERVAL   = float(os.getenv("FFT_INTERVAL", "1.0"))
@@ -42,10 +48,16 @@ NBFM_DEMOD_GAIN = AUDIO_RATE_FM / (2 * math.pi * NBFM_DEV)
 PPM_CORRECTION = int(os.getenv("PPM_CORRECTION", "0")) # crystal PPM error; calibrate with: rtl_test -p 100
 CW_BW          = 200
 FM_BW_THRESH   = 5000   # >5 kHz -3dB bw → FM, else CW
+FM_RECORD_BANDS = parse_frequency_ranges(
+    os.getenv("FM_RECORD_BANDS_HZ"), DEFAULT_FM_RECORD_BANDS
+)
+CW_RECORD_BANDS = parse_frequency_ranges(
+    os.getenv("CW_RECORD_BANDS_HZ"), DEFAULT_CW_RECORD_BANDS
+)
 
 NUM_DYN_FM     = int(os.getenv("NUM_DYN_FM", "8"))
 NUM_DYN_CW     = int(os.getenv("NUM_DYN_CW", "4"))
-SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "10"))
+SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "300"))
 # IMPORTANT: clearing slots on retune calls lock()/disconnect()/connect()/unlock() per slot.
 # GNURadio 3.10 connect()/disconnect() are NOT safe for concurrent calls from multiple threads
 # (FFTDetector and ScanScheduler both call into the graph simultaneously → SIGSEGV).
@@ -56,13 +68,13 @@ CLEAR_SLOTS_ON_RETUNE = False
 ACARS_FREQ_MIN = 128_000_000
 ACARS_FREQ_MAX = 132_000_000
 ACARS_AUDIO_BW = 8000    # passband Hz; covers 1200/2400 Hz AFSK tones with headroom
-NUM_DYN_ACARS  = int(os.getenv("NUM_DYN_ACARS", "4"))
+NUM_DYN_ACARS  = int(os.getenv("NUM_DYN_ACARS", "0"))
 # Time to suppress squelch-open after a retune, allowing the RTL-SDR PLL to settle.
 # Without this, synthesizer noise during frequency switching triggers all squelch gates
 # simultaneously, producing a cluster of fake ~2s recordings at every retune.
 RF_SETTLE_SEC  = float(os.getenv("RF_SETTLE_SEC", "0.3"))
 CAPTURE_ID     = os.getenv("CAPTURE_ID", "default").strip() or "default"
-FIXED_MONITOR_HZ = int(os.getenv("FIXED_MONITOR_HZ", "145500000"))
+FIXED_MONITOR_HZ = int(os.getenv("FIXED_MONITOR_HZ", "146520000"))
 
 VOICE_DIR      = "/data/audio/voice"
 CW_DIR         = "/data/audio/cw"
@@ -551,10 +563,16 @@ class FFTDetector(threading.Thread):
             peak_power = float(power_db[peak_idx])
             bw = float(freqs[min(e, FFT_SIZE - 1)] - freqs[s])
 
-            if bw > FM_BW_THRESH:
-                mode = "FM"
-            else:
-                mode = "CW"
+            slot_mode = classify_peak_for_recording(
+                peak_freq,
+                fm_record_bands=FM_RECORD_BANDS,
+                cw_record_bands=CW_RECORD_BANDS,
+                acars_min_hz=ACARS_FREQ_MIN,
+                acars_max_hz=ACARS_FREQ_MAX,
+            )
+            # Detection metadata still exposes the raw bandwidth guess for
+            # peaks outside configured recording bands.
+            mode = slot_mode or ("FM" if bw > FM_BW_THRESH else "CW")
 
             detections.append({
                 "frequency_hz": float(peak_freq),
@@ -563,21 +581,16 @@ class FFTDetector(threading.Thread):
                 "mode": mode
             })
 
-            # Assign to dynamic slot — ACARS frequencies use AM, not FM
-            if ACARS_FREQ_MIN <= peak_freq <= ACARS_FREQ_MAX:
+            # Assign to dynamic slot. Band-plan routing prevents quiet FM
+            # repeater carriers from being misclassified into CW recorders.
+            if slot_mode == "ACARS":
                 self.tb._assign_acars_slot(int(round(peak_freq)))
-            elif mode == "FM":
+            elif slot_mode == "FM":
                 # Do not mirror the fixed monitor channel into a dynamic slot.
                 if abs(peak_freq - self.tb.fixed_freq) <= 15000:
                     continue
-                # Ignore band-edge noise outside 2m ham band (144–148 MHz)
-                if not (144_000_000 <= peak_freq <= 148_000_000):
-                    continue
                 self.tb._assign_fm_slot(int(round(peak_freq)))
-            elif mode == "CW":
-                # Ignore band-edge noise outside 2m ham band (144–148 MHz)
-                if not (144_000_000 <= peak_freq <= 148_000_000):
-                    continue
+            elif slot_mode == "CW":
                 self.tb._assign_cw_slot(int(round(peak_freq)))
 
         self.detections = detections
@@ -675,6 +688,8 @@ def main():
     print(f"  Dynamic FM:     {NUM_DYN_FM} slots", flush=True)
     print(f"  Dynamic CW:     {NUM_DYN_CW} slots", flush=True)
     print(f"  Dynamic ACARS:  {NUM_DYN_ACARS} slots (AM envelope)", flush=True)
+    print(f"  FM bands:       {FM_RECORD_BANDS}", flush=True)
+    print(f"  CW bands:       {CW_RECORD_BANDS}", flush=True)
     print(f"  RF squelch:     {RF_SQUELCH_DB} dB", flush=True)
     print(f"  Scan centers:   {[f'{c/1e6:.1f}' for c in SCAN_CENTERS]} MHz", flush=True)
     print("=" * 60, flush=True)
