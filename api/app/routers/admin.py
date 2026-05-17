@@ -5,9 +5,33 @@ import os
 import re
 import shutil
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 from datetime import datetime, timedelta, timezone
 
 import urllib.request
+
+# Dedicated executor for SDR-health filesystem calls. Stale NFS handles can hang
+# `open()` / `glob` for minutes; we bound each call so a hung mount can never
+# block the event loop or starve the FastAPI worker threadpool.
+_SDR_HEALTH_FS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="sdr-health-fs"
+)
+_SDR_HEALTH_FS_TIMEOUT = 1.5  # seconds
+
+
+def _bounded_fs_call(fn, *args, **kwargs):
+    """Run `fn(*args)` in a dedicated thread with a hard timeout.
+
+    Returns the result, or None on timeout / exception. A runaway thread keeps
+    running (Python can't kill it) but the caller is freed immediately, so a
+    single stale-NFS handle can't pin the request or starve other workers.
+    """
+    try:
+        return _SDR_HEALTH_FS_EXECUTOR.submit(fn, *args, **kwargs).result(
+            timeout=_SDR_HEALTH_FS_TIMEOUT
+        )
+    except (_FuturesTimeout, Exception):
+        return None
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -484,26 +508,41 @@ def _get_band_pod_health(band: str) -> dict | None:
     }
 
 
+# Short TTL cache so multiple Dashboard tabs / rapid refetches don't stack
+# blocking NFS calls on the worker threadpool.
+_SDR_HEALTH_CACHE: dict[str, tuple[float, dict]] = {}
+_SDR_HEALTH_CACHE_TTL = 15.0
+
+
 @router.get("/sdr-health")
-async def get_sdr_health(band: str | None = None):
-    last_seen_seconds = None
-    last_seen_at = None
-    healthy = False
-    status = "no_files"
+def get_sdr_health(band: str | None = None):
     band_ranges = {
         "2m": (136_000_000, 174_000_000),
         "70cm": (420_000_000, 470_000_000),
     }
     if band is not None and band not in band_ranges:
         raise HTTPException(status_code=400, detail="band must be one of: 2m, 70cm")
+
+    cache_key = band or "all"
+    cached = _SDR_HEALTH_CACHE.get(cache_key)
+    if cached and _time.time() - cached[0] < _SDR_HEALTH_CACHE_TTL:
+        return cached[1]
+
+    last_seen_seconds = None
+    last_seen_at = None
+    healthy = False
+    status = "no_files"
     try:
         heartbeat_ts = None
         if band in band_ranges:
-            heartbeat_ts = _read_heartbeat_timestamp(band)
+            heartbeat_ts = _bounded_fs_call(_read_heartbeat_timestamp, band)
         else:
             heartbeats = [
                 ts
-                for ts in (_read_heartbeat_timestamp("2m"), _read_heartbeat_timestamp("70cm"))
+                for ts in (
+                    _bounded_fs_call(_read_heartbeat_timestamp, "2m"),
+                    _bounded_fs_call(_read_heartbeat_timestamp, "70cm"),
+                )
                 if ts is not None
             ]
             if heartbeats:
@@ -514,18 +553,22 @@ async def get_sdr_health(band: str | None = None):
             last_seen_at = datetime.fromtimestamp(heartbeat_ts).isoformat()
             healthy = last_seen_seconds < 300
             status = "ok" if healthy else "stale"
-            return {
+            result = {
                 "band": band or "all",
                 "last_seen_seconds": last_seen_seconds,
                 "last_seen_at": last_seen_at,
                 "healthy": healthy,
                 "status": status,
             }
+            _SDR_HEALTH_CACHE[cache_key] = (_time.time(), result)
+            return result
 
         min_hz, max_hz = (None, None)
         if band in band_ranges:
             min_hz, max_hz = band_ranges[band]
-        newest_mtime = _newest_recording_mtime(min_hz=min_hz, max_hz=max_hz)
+        newest_mtime = _bounded_fs_call(
+            _newest_recording_mtime, min_hz=min_hz, max_hz=max_hz
+        )
         if newest_mtime is not None:
             last_seen_seconds = int(_time.time() - newest_mtime)
             last_seen_at = datetime.fromtimestamp(newest_mtime).isoformat()
@@ -534,28 +577,33 @@ async def get_sdr_health(band: str | None = None):
         elif band in band_ranges:
             pod_health = _get_band_pod_health(band)
             if pod_health is not None:
+                _SDR_HEALTH_CACHE[cache_key] = (_time.time(), pod_health)
                 return pod_health
+            # No heartbeat, no recordings, no pod fallback — storage is hung.
+            status = "storage_unavailable"
     except Exception as exc:
         status = f"error: {exc}"
-    return {
+    result = {
         "band": band or "all",
         "last_seen_seconds": last_seen_seconds,
         "last_seen_at": last_seen_at,
         "healthy": healthy,
         "status": status,
     }
+    _SDR_HEALTH_CACHE[cache_key] = (_time.time(), result)
+    return result
 
 
 # Backward-compatible aliases for older UI clients that still poll
 # /api/v1/admin/health and /api/v1/admin/health/{band}.
 @router.get("/health")
-async def get_sdr_health_legacy():
-    return await get_sdr_health(None)
+def get_sdr_health_legacy():
+    return get_sdr_health(None)
 
 
 @router.get("/health/{band}")
-async def get_sdr_health_band_legacy(band: str):
-    return await get_sdr_health(band)
+def get_sdr_health_band_legacy(band: str):
+    return get_sdr_health(band)
 
 
 @router.get("/radio-status")
