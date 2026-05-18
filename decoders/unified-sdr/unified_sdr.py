@@ -10,6 +10,7 @@ from bandplan import (
     DEFAULT_CW_RECORD_BANDS,
     DEFAULT_FM_RECORD_BANDS,
     classify_peak_for_recording,
+    frequency_matches,
     parse_frequency_ranges,
 )
 
@@ -57,6 +58,7 @@ CW_RECORD_BANDS = parse_frequency_ranges(
 
 NUM_DYN_FM     = int(os.getenv("NUM_DYN_FM", "8"))
 NUM_DYN_CW     = int(os.getenv("NUM_DYN_CW", "4"))
+DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "2500"))
 SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "300"))
 # IMPORTANT: clearing slots on retune calls lock()/disconnect()/connect()/unlock() per slot.
 # GNURadio 3.10 connect()/disconnect() are NOT safe for concurrent calls from multiple threads
@@ -387,7 +389,7 @@ class UnifiedSDR(gr.top_block):
     def _assign_fm_slot(self, freq_hz):
         """Assign a detected FM frequency to an available dynamic slot."""
         for slot in self.dyn_fm:
-            if slot["freq"] == freq_hz:
+            if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
                 slot["assigned_at"] = time.time()  # refresh
                 return  # already assigned
         # Find a free slot, or evict the oldest idle one
@@ -411,7 +413,7 @@ class UnifiedSDR(gr.top_block):
     def _assign_cw_slot(self, freq_hz):
         """Assign a detected CW frequency to an available dynamic slot."""
         for slot in self.dyn_cw:
-            if slot["freq"] == freq_hz:
+            if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
                 slot["assigned_at"] = time.time()
                 return
         target = None
@@ -439,7 +441,7 @@ class UnifiedSDR(gr.top_block):
     def _assign_acars_slot(self, freq_hz):
         """Assign a detected ACARS frequency to an AM-demodulation slot."""
         for slot in self.dyn_acars:
-            if slot["freq"] == freq_hz:
+            if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
                 slot["assigned_at"] = time.time()
                 return
         target = None
@@ -688,6 +690,7 @@ def main():
     print(f"  Dynamic FM:     {NUM_DYN_FM} slots", flush=True)
     print(f"  Dynamic CW:     {NUM_DYN_CW} slots", flush=True)
     print(f"  Dynamic ACARS:  {NUM_DYN_ACARS} slots (AM envelope)", flush=True)
+    print(f"  Slot tolerance: {DYN_SLOT_FREQ_TOLERANCE_HZ} Hz", flush=True)
     print(f"  FM bands:       {FM_RECORD_BANDS}", flush=True)
     print(f"  CW bands:       {CW_RECORD_BANDS}", flush=True)
     print(f"  RF squelch:     {RF_SQUELCH_DB} dB", flush=True)

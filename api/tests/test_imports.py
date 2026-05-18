@@ -18,7 +18,7 @@ ROUTERS = [
 ]
 SERVICES = [
     "alerting", "aprs_is", "audio", "hamdb", "indexer",
-    "known_freqs", "metrics", "repeater", "tagging",
+    "known_freqs", "metrics", "repeater", "tagging", "transcription",
 ]
 
 

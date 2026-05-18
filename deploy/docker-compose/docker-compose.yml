@@ -111,6 +111,7 @@ services:
       NUM_DYN_FM: ${NUM_DYN_FM:-8}
       NUM_DYN_CW: ${NUM_DYN_CW:-4}
       NUM_DYN_ACARS: ${NUM_DYN_ACARS:-0}
+      DYN_SLOT_FREQ_TOLERANCE_HZ: ${DYN_SLOT_FREQ_TOLERANCE_HZ:-2500}
       SLOT_RECYCLE_SEC: ${SLOT_RECYCLE_SEC:-300}
     volumes:
       - sdr-artifacts:/data

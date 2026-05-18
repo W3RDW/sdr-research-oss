@@ -77,6 +77,10 @@ def in_frequency_ranges(freq_hz: float, ranges: Iterable[FrequencyRange]) -> boo
     return any(low <= hz <= high for low, high in ranges)
 
 
+def frequency_matches(left_hz: float | None, right_hz: float, tolerance_hz: float) -> bool:
+    return left_hz is not None and abs(left_hz - right_hz) <= tolerance_hz
+
+
 def classify_peak_for_recording(
     freq_hz: float,
     *,

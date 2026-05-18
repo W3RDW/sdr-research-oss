@@ -22,6 +22,7 @@ MIN_FILE_AGE_SEC = int(os.getenv("MIN_FILE_AGE_SEC", "120"))
 MIN_STABLE_SEC = int(os.getenv("MIN_STABLE_SEC", "30"))
 CHUNK_SEC = int(os.getenv("CHUNK_SEC", "30"))
 RETRY_EMPTY_TRANSCRIPTS = os.getenv("RETRY_EMPTY_TRANSCRIPTS", "true").lower() in ("1", "true", "yes", "on")
+RETRY_SUFFIX = ".retry"
 # Whisper segment-level noise rejection. Raise no_speech_threshold to discard
 # more uncertain segments; lower compression_ratio_threshold to drop repetitive
 # hallucinated output.
@@ -94,16 +95,26 @@ def iter_wav_candidates():
     candidates = []
     now = time.time()
     cutoff_ts = now - _SCAN_WINDOW_SEC
+    retry_names = set()
+    try:
+        retry_names = {
+            f[:-len(RETRY_SUFFIX)]
+            for f in os.listdir(TEXT_DIR)
+            if f.endswith(RETRY_SUFFIX)
+        }
+    except FileNotFoundError:
+        pass
     for audio_dir in AUDIO_DIRS:
         try:
             wav_names = [f for f in os.listdir(audio_dir) if f.endswith(".wav")]
         except FileNotFoundError:
             continue
         for fname in wav_names:
+            is_retry = fname in retry_names
             # Use the embedded timestamp in the filename ({freq}_{epoch}.wav)
             # to skip old files without stat() calls.
             parts = fname.replace(".wav", "").split("_")
-            if len(parts) >= 2:
+            if not is_retry and len(parts) >= 2:
                 try:
                     file_epoch = int(parts[-1])
                     if file_epoch < cutoff_ts:
@@ -117,7 +128,11 @@ def iter_wav_candidates():
                 mtime = os.path.getmtime(wav_path)
             except OSError:
                 continue
-            has_text = os.path.exists(txt_path) and os.path.getsize(txt_path) > 0
+            has_text = (
+                not is_retry
+                and os.path.exists(txt_path)
+                and os.path.getsize(txt_path) > 0
+            )
             candidates.append((has_text, -mtime, audio_dir, fname))
     candidates.sort()
     return current_paths, [(audio_dir, fname) for _, _, audio_dir, fname in candidates]
@@ -195,6 +210,8 @@ while True:
     for audio_dir, fname in wav_entries:
         wav_path = os.path.join(audio_dir, fname)
         txt_path = os.path.join(TEXT_DIR, fname.replace(".wav", ".txt"))
+        retry_path = os.path.join(TEXT_DIR, fname + RETRY_SUFFIX)
+        force_retry = os.path.exists(retry_path)
         freq_hz = parse_voice_frequency_hz(fname)
 
         # APRS-band audio is handled by the APRS decoder/indexer path.
@@ -203,12 +220,21 @@ while True:
 
         if not os.path.isfile(wav_path):
             continue
-        if now - os.path.getmtime(wav_path) < MIN_FILE_AGE_SEC:
+        try:
+            wav_mtime = os.path.getmtime(wav_path)
+        except OSError:
+            continue
+        if not force_retry and now - wav_mtime < MIN_FILE_AGE_SEC:
             # Skip files that may still be actively written by recorder.
             continue
 
         if os.path.exists(txt_path):
-            if os.path.getsize(txt_path) > 0:
+            if force_retry:
+                try:
+                    os.remove(txt_path)
+                except OSError:
+                    pass
+            elif os.path.getsize(txt_path) > 0:
                 # Remove stale "too long" stubs so they get retranscribed.
                 try:
                     with open(txt_path, "r") as f:
@@ -219,23 +245,26 @@ while True:
                         continue
                 except OSError:
                     continue
-            if not RETRY_EMPTY_TRANSCRIPTS:
+            elif not RETRY_EMPTY_TRANSCRIPTS:
                 continue
-            try:
-                os.remove(txt_path)
-            except OSError:
-                pass
-
+            else:
+                try:
+                    os.remove(txt_path)
+                except OSError:
+                    pass
         st = os.stat(wav_path)
         if st.st_size == 0:
             continue
-        sig = (st.st_size, int(st.st_mtime))
-        prev = file_state.get(wav_path)
-        if prev is None or prev["sig"] != sig:
-            file_state[wav_path] = {"sig": sig, "since": now}
-            continue
-        if now - prev["since"] < MIN_STABLE_SEC:
-            continue
+        if not force_retry:
+            sig = (st.st_size, int(st.st_mtime))
+            prev = file_state.get(wav_path)
+            if prev is None or prev["sig"] != sig:
+                file_state[wav_path] = {"sig": sig, "since": now}
+                continue
+            if now - prev["since"] < MIN_STABLE_SEC:
+                continue
+        else:
+            file_state.pop(wav_path, None)
 
         try:
             with wave.open(wav_path, "rb") as wf:
@@ -261,6 +290,10 @@ while True:
         # re-visits this file and picks up the new transcript.
         try:
             os.utime(wav_path, None)
+        except OSError:
+            pass
+        try:
+            os.remove(retry_path)
         except OSError:
             pass
         print(f"Wrote transcript ({len(lines)} lines) for {wav_path}")

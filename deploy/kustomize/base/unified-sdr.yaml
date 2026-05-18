@@ -47,6 +47,7 @@ spec:
             - {name: NUM_DYN_FM, value: "8"}
             - {name: NUM_DYN_CW, value: "4"}
             - {name: NUM_DYN_ACARS, value: "0"}
+            - {name: DYN_SLOT_FREQ_TOLERANCE_HZ, value: "2500"}
             - {name: SLOT_RECYCLE_SEC, value: "300"}
           volumeMounts:
             - {name: artifacts, mountPath: /data}

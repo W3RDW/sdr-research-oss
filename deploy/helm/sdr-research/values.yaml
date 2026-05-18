@@ -113,6 +113,7 @@ unifiedSdr:
     fm: 8
     cw: 4
     acars: 0
+    frequencyToleranceHz: 2500
     recycleSec: 300
 
 # ─── RepeaterBook (optional) ─────────────────────────────────────────────

@@ -73,6 +73,8 @@ spec:
               value: {{ .Values.unifiedSdr.slots.cw | quote }}
             - name: NUM_DYN_ACARS
               value: {{ .Values.unifiedSdr.slots.acars | quote }}
+            - name: DYN_SLOT_FREQ_TOLERANCE_HZ
+              value: {{ .Values.unifiedSdr.slots.frequencyToleranceHz | quote }}
             - name: SLOT_RECYCLE_SEC
               value: {{ .Values.unifiedSdr.slots.recycleSec | quote }}
           volumeMounts:

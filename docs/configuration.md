@@ -52,6 +52,7 @@ need a manual `ALTER TABLE`.
 | `NUM_DYN_FM` | `8` | Dynamic FM demodulator slots. |
 | `NUM_DYN_CW` | `4` | Dynamic CW slots. |
 | `NUM_DYN_ACARS` | `0` | Dynamic AM (ACARS) slots. |
+| `DYN_SLOT_FREQ_TOLERANCE_HZ` | `2500` | Existing dynamic slot refresh tolerance. Prevents one drifting FFT peak from consuming multiple slots. |
 | `SLOT_RECYCLE_SEC` | `300` | Free unused slots after this. |
 | `FFT_SIZE` | `4096` | FFT bins. Higher = finer resolution, more CPU. |
 | `FFT_INTERVAL` | `1.0` | Seconds between detector runs. |

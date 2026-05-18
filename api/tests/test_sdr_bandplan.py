@@ -78,6 +78,12 @@ def test_empty_band_list_disables_that_recorder_family():
     ) is None
 
 
+def test_frequency_match_uses_tolerance():
+    assert bandplan.frequency_matches(146_940_000, 146_941_900, 2500) is True
+    assert bandplan.frequency_matches(146_940_000, 146_943_000, 2500) is False
+    assert bandplan.frequency_matches(None, 146_940_000, 2500) is False
+
+
 def test_frequency_range_parser_accepts_mhz_shorthand():
     assert bandplan.parse_frequency_ranges("144.3MHz-148MHz,420-450", "") == (
         (144_300_000, 148_000_000),

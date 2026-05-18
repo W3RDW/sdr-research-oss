@@ -15,6 +15,7 @@ from ..database import get_db
 from ..models import CallsignInfo, Recording, Repeater
 from ..services.known_freqs import classify_frequency_group, frequency_group_label
 from ..services.tagging import extract_callsign_tags, is_no_speech_transcript, normalize_callsign, parse_ai_tags
+from ..services.transcription import queue_retranscription
 
 router = APIRouter()
 
@@ -577,6 +578,7 @@ async def reclassify_recording_mode(
     recording.transcript = None
     recording.text_path = None
     recording.audio_path = new_audio_path
+    queue_retranscription(new_audio_path, _settings.text_base_path, new_mode)
     db.execute(
         sql_text("UPDATE recordings SET search_vector = NULL WHERE id = :id"),
         {"id": recording.id},
@@ -612,9 +614,15 @@ async def retranscribe_recording(file_id: int, db: Session = Depends(get_db)):
     recording.transcript = None
     recording.text_path = None
     recording.ai_tags = None
+    from ..config import settings as _settings
+    retry_marker = queue_retranscription(recording.audio_path, _settings.text_base_path, recording.mode)
     db.execute(sql_text("UPDATE recordings SET search_vector = NULL WHERE id = :id"), {"id": recording.id})
     db.commit()
-    return {"status": "ok", "message": "Transcript cleared — Whisper will re-transcribe on next cycle"}
+    return {
+        "status": "ok",
+        "message": "Transcript cleared — decoder will re-transcribe on next cycle",
+        "retry_queued": retry_marker is not None,
+    }
 
 
 @router.get("/{file_id}/stream")

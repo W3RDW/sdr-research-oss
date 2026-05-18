@@ -44,6 +44,7 @@ from ..models import AlertHistory, FrequencyLabel, Recording, Repeater
 from ..services.alerting import _send_webhook
 from ..services.indexer import maybe_set_ai_tags, maybe_set_frequency_metadata
 from ..services.repeater import sync_repeaters
+from ..services.transcription import queue_retranscription
 
 router = APIRouter()
 
@@ -678,6 +679,7 @@ async def bulk_retranscribe(
     else:
         recs = all_recs
     cleared = 0
+    retry_queued = 0
     for rec in recs:
         if rec.text_path and os.path.exists(rec.text_path):
             try:
@@ -687,6 +689,8 @@ async def bulk_retranscribe(
         rec.transcript = None
         rec.text_path = None
         rec.ai_tags = None
+        if rec.audio_path and queue_retranscription(rec.audio_path, settings.text_base_path, rec.mode):
+            retry_queued += 1
         db.execute(
             _sql_text("UPDATE recordings SET search_vector = NULL WHERE id = :id"),
             {"id": rec.id},
@@ -695,6 +699,7 @@ async def bulk_retranscribe(
     db.commit()
     return {
         "cleared": cleared,
+        "retry_queued": retry_queued,
         "mode": "no_speech_only" if clear_no_speech_only else "all_voice_cw",
     }
 
