@@ -187,11 +187,128 @@ decoders:
   spectrum-exporter:
     enabled: false
     image: {repository: ghcr.io/w3rdw/sdr-research-spectrum-exporter, tag: "0.1.0"}
-  # acars + vdl2 not yet shipped — apt packages don't exist in Debian.
-  # See decoders/{acars,vdl2}/README.md for source-build TODOs.
+  # acars + vdl2 build acarsdec/dumpvdl2 from source (not in Debian apt). They
+  # connect to an Airspy over SoapyRemote. NOTE: acars is unverified end-to-end
+  # (upstream acarsdec is archived) — smoke-test before enabling. See the READMEs.
   acars:
     enabled: false
     image: {repository: ghcr.io/w3rdw/sdr-research-acars, tag: latest}
+    env:
+      SOAPY_REMOTE: "airspy-soapy:55132"
+      ACARS_OUTPUT_DIR: "/data/text/acars"
+      ACARS_FREQUENCIES: "129.125 130.025 130.425 130.450 131.125 131.550"
+      ACARS_GAIN: "18"
   vdl2:
     enabled: false
     image: {repository: ghcr.io/w3rdw/sdr-research-vdl2, tag: latest}
+    env:
+      SOAPY_REMOTE: "airspy-soapy:55132"
+      VDL2_OUTPUT_DIR: "/data/text/vdl2"
+      VDL2_FREQUENCIES: "136725000 136775000 136800000 136875000 136975000"
+      VDL2_GAIN: "18"
+  # ─── HF decoders (RX888 over SoapyRemote / direct USB) ───────────────────
+  # The RX888 SoapyRemote server is single-client: enabling one of these should
+  # be paired with scaling any other RX888 consumer (e.g. OpenWebRX) to 0.
+  hfdl:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-hfdl, tag: latest}
+    nodeSelector: {}     # pin to the RX888 node
+    env:
+      SOAPY_REMOTE: "rx888-soapy:55132"
+      SOAPY_DEVICE_STRING: "driver=SDDC"
+      HFDL_OUTPUT_DIR: "/data/text/hfdl"
+      HFDL_FREQUENCIES: "8912 8927 10081 11384 13303"   # kHz (dumphfdl)
+  ft8-wspr:
+    enabled: false
+    # Unified HF decoder: FT8/WSPR + HFDL + SSTV time-shared on one RX888.
+    image: {repository: ghcr.io/w3rdw/sdr-research-ft8-wspr, tag: latest}
+    privileged: true
+    hostUsbPath: /dev/bus/usb
+    nodeSelector: {}     # pin to the RX888 node (required)
+    resources:
+      requests: {cpu: 500m,  memory: 512Mi}
+      limits:   {cpu: 3000m, memory: 2Gi}
+    env:
+      SOAPY_REMOTE: "rx888-soapy:55132"
+      SOAPY_DEVICE_STRING: "driver=SDDC"
+      FT8_OUTPUT_DIR: "/data/text/ft8"
+      FT8_FREQUENCIES: "3573000 7074000 10136000 14074000 18100000 21074000 24915000 28074000"
+      WSPR_FREQUENCIES: "7038600 10138700 14095600 21094600 28124600"
+      HFDL_ENABLED: "true"
+      HFDL_OUTPUT_DIR: "/data/text/hfdl"
+      HFDL_FREQUENCIES: "10081 11384"   # kHz
+      SSTV_OUTPUT_DIR: "/data/audio/sstv"
+  hf-combined:
+    enabled: false
+    # HFDL + SSTV-HF time-shared on the RX888 (alternative to ft8-wspr).
+    image: {repository: ghcr.io/w3rdw/sdr-research-hf-combined, tag: latest}
+    privileged: true
+    hostUsbPath: /dev/bus/usb
+    nodeSelector: {}
+    env:
+      SOAPY_REMOTE: "rx888-soapy:55132"
+      SOAPY_DEVICE_STRING: "driver=SDDC"
+      HFDL_OUTPUT_DIR: "/data/text/hfdl"
+      HFDL_FREQUENCIES: "10081 11384"
+      SSTV_OUTPUT_DIR: "/data/images/sstv"
+      HF_SSTV_FREQS: "14230000,21340000,28680000,7171000"
+  sstv-hf:
+    enabled: false
+    # HF SSTV via direct RX888 capture — reuses the sstv image with the HF entrypoint.
+    image: {repository: ghcr.io/w3rdw/sdr-research-sstv, tag: latest}
+    command: ["python3", "/sstv-hf-entrypoint.py"]
+    nodeSelector: {}
+    env:
+      SOAPY_REMOTE_RX888: "rx888-soapy:55132"
+      SSTV_OUTPUT_DIR: "/data/images/sstv"
+      HF_SSTV_FREQS: "14230000,21340000,28680000,7171000"
+
+# ─── MCP server (optional — read-only API access for LLM / agent clients) ─
+mcp:
+  enabled: false
+  image: {repository: ghcr.io/w3rdw/sdr-research-mcp, tag: latest, pullPolicy: IfNotPresent}
+  replicaCount: 1
+  service: {type: ClusterIP, port: 8080}
+  token: ""            # bearer token; EMPTY DISABLES AUTH — never expose unauthenticated
+  existingSecret: ""   # secret name carrying key 'mcp-token'
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits:   {cpu: 200m, memory: 192Mi}
+
+# ─── Watchdog (optional — k8s auto-recovery supervisor) ──────────────────
+# Polls the API radio-status endpoint and rollout-restarts stale decoders.
+# NOTE: the watched-deployment list is currently baked into the image
+# (unified-sdr, unified-sdr-70cm, ft8-wspr-decoder); align your release name
+# or names before relying on auto-restart. Defaults to dry-run (log only).
+watchdog:
+  enabled: false
+  image: {repository: ghcr.io/w3rdw/sdr-research-watchdog, tag: latest, pullPolicy: IfNotPresent}
+  dryRun: true
+  cycleSeconds: 60
+  restartGraceSeconds: 600
+  nodeSelector: {}
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits:   {cpu: 200m, memory: 128Mi}
+
+# ─── SoapyRemote front-end servers (optional) ────────────────────────────
+# DaemonSets pinned to the node with the physical USB SDR, exposing it over the
+# network. Services use FIXED names (airspy-soapy / rx888-soapy) so decoders'
+# default SOAPY_REMOTE values resolve. Both default to port 55132.
+soapy:
+  airspy:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-soapy-airspy, tag: latest, pullPolicy: IfNotPresent}
+    port: 55132
+    nodeSelector: {}   # REQUIRED — node with the Airspy plugged in
+    resources:
+      requests: {cpu: 200m, memory: 128Mi}
+      limits:   {cpu: 1000m, memory: 512Mi}
+  rx888:
+    enabled: false
+    image: {repository: ghcr.io/w3rdw/sdr-research-soapy-rx888, tag: latest, pullPolicy: IfNotPresent}
+    port: 55132
+    nodeSelector: {}   # REQUIRED — node with the RX888 plugged in
+    resources:
+      requests: {cpu: 200m, memory: 256Mi}
+      limits:   {cpu: 1000m, memory: 1Gi}

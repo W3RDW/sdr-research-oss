@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1
 #
-# Whisper voice transcription. Default base is CPU; for GPU build with
+# Whisper voice transcription.
+#
+# Default base is CPU-only (python:3.12-slim). For a CUDA/GPU image build with:
 #   --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
-# and add the appropriate Python runtime.
+# The cudnn-runtime variant is required: faster-whisper/CTranslate2 needs cuDNN
+# and cuBLAS at runtime for the float16 CUDA path. The RUN below installs the
+# Python runtime + ffmpeg on the CUDA base (which ships neither) and is a no-op
+# on python:slim, so no other changes are needed to produce the GPU image.
 ARG BASE=python:3.12-slim
 FROM ${BASE}
 

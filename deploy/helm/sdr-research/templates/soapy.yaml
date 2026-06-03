@@ -1,0 +1,115 @@
+{{- /*
+SoapyRemote front-end servers. Each is a DaemonSet pinned (via nodeSelector) to
+the node with the physical USB SDR, exposing it over the network. The Services
+use FIXED names (airspy-soapy / rx888-soapy) — NOT release-prefixed — so the
+decoders' default SOAPY_REMOTE values resolve without per-release overrides.
+*/ -}}
+{{- if .Values.soapy.airspy.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}-airspy-soapy
+  labels:
+    {{- include "sdr-research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: airspy-soapy
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdr-research
+      app.kubernetes.io/component: airspy-soapy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sdr-research
+        app.kubernetes.io/component: airspy-soapy
+    spec:
+      {{- with .Values.soapy.airspy.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: airspy-soapy
+          image: "{{ .Values.soapy.airspy.image.repository }}:{{ .Values.soapy.airspy.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" .Values.soapy.airspy.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: {{ .Values.soapy.airspy.port }}
+          volumeMounts:
+            - name: usb
+              mountPath: /dev/bus/usb
+          {{- with .Values.soapy.airspy.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: usb
+          hostPath: {path: /dev/bus/usb}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airspy-soapy
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: sdr-research
+    app.kubernetes.io/component: airspy-soapy
+  ports:
+    - port: {{ .Values.soapy.airspy.port }}
+      targetPort: {{ .Values.soapy.airspy.port }}
+{{- end }}
+{{- if .Values.soapy.rx888.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}-rx888-soapy
+  labels:
+    {{- include "sdr-research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rx888-soapy
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdr-research
+      app.kubernetes.io/component: rx888-soapy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sdr-research
+        app.kubernetes.io/component: rx888-soapy
+    spec:
+      {{- with .Values.soapy.rx888.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: rx888-soapy
+          image: "{{ .Values.soapy.rx888.image.repository }}:{{ .Values.soapy.rx888.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" .Values.soapy.rx888.image.pullPolicy }}
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: {{ .Values.soapy.rx888.port }}
+          volumeMounts:
+            - name: usb
+              mountPath: /dev/bus/usb
+          {{- with .Values.soapy.rx888.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: usb
+          hostPath: {path: /dev/bus/usb}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rx888-soapy
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: sdr-research
+    app.kubernetes.io/component: rx888-soapy
+  ports:
+    - port: {{ .Values.soapy.rx888.port }}
+      targetPort: {{ .Values.soapy.rx888.port }}
+{{- end }}

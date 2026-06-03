@@ -45,6 +45,10 @@ spec:
         - name: {{ $name }}-decoder
           image: "{{ $cfg.image.repository }}:{{ $cfg.image.tag }}"
           imagePullPolicy: {{ default "IfNotPresent" $cfg.image.pullPolicy }}
+          {{- if $cfg.privileged }}
+          securityContext:
+            privileged: true
+          {{- end }}
           {{- with $cfg.command }}
           command: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -66,6 +70,10 @@ spec:
           volumeMounts:
             - name: artifacts
               mountPath: /data
+            {{- if $cfg.hostUsbPath }}
+            - name: usb
+              mountPath: /dev/bus/usb
+            {{- end }}
           {{- with $cfg.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -82,5 +90,9 @@ spec:
         - name: artifacts
           persistentVolumeClaim:
             claimName: {{ $.Release.Name }}-artifacts
+        {{- if $cfg.hostUsbPath }}
+        - name: usb
+          hostPath: {path: {{ $cfg.hostUsbPath }}}
+        {{- end }}
 {{- end }}
 {{- end }}

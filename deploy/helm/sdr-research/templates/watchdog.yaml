@@ -1,0 +1,91 @@
+{{- if .Values.watchdog.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-watchdog
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-watchdog
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-watchdog
+  labels: {{- include "sdr-research.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-watchdog
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-watchdog
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-watchdog
+  labels:
+    {{- include "sdr-research.labels" . | nindent 4 }}
+    app.kubernetes.io/component: watchdog
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sdr-research
+      app.kubernetes.io/component: watchdog
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sdr-research
+        app.kubernetes.io/component: watchdog
+    spec:
+      serviceAccountName: {{ .Release.Name }}-watchdog
+      {{- with .Values.watchdog.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: watchdog
+          image: "{{ .Values.watchdog.image.repository }}:{{ .Values.watchdog.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" .Values.watchdog.image.pullPolicy }}
+          env:
+            - name: WATCHDOG_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: WATCHDOG_API_URL
+              value: "http://{{ .Release.Name }}-api:{{ .Values.api.service.port }}/api/v1/admin/radio-status"
+            - name: WATCHDOG_CYCLE_SECONDS
+              value: {{ .Values.watchdog.cycleSeconds | quote }}
+            - name: WATCHDOG_RESTART_GRACE_SECONDS
+              value: {{ .Values.watchdog.restartGraceSeconds | quote }}
+            - name: WATCHDOG_DRY_RUN
+              value: {{ .Values.watchdog.dryRun | quote }}
+            {{- if .Values.alerts.enabled }}
+            - name: ALERT_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.alerts.existingSecret | default (printf "%s-secrets" .Release.Name) }}
+                  key: alert-webhook-url
+                  optional: true
+            {{- end }}
+          {{- with .Values.watchdog.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

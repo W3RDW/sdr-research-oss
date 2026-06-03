@@ -52,24 +52,64 @@ jobs:
             context: decoders/eas
             image: sdr-research-eas
             platforms: linux/amd64,linux/arm64
-          # acars + vdl2 disabled — `acarsdec` and `dumpvdl2` are not in
-          # Debian apt; Dockerfiles need source-build. See decoders/{acars,vdl2}/README.md.
-          # - name: acars
-          #   context: decoders/acars
-          #   image: sdr-research-acars
-          #   platforms: linux/amd64
-          # - name: vdl2
-          #   context: decoders/vdl2
-          #   image: sdr-research-vdl2
-          #   platforms: linux/amd64
+          # acars + vdl2 now build from source (acarsdec/dumpvdl2 compiled in the
+          # Dockerfile — they are not in Debian apt). amd64-only: the cmake source
+          # builds are slow/unverified under arm64 QEMU emulation.
+          - name: acars
+            context: decoders/acars
+            image: sdr-research-acars
+            platforms: linux/amd64
+          - name: vdl2
+            context: decoders/vdl2
+            image: sdr-research-vdl2
+            platforms: linux/amd64
+          # HF decoders (RX888 via SoapyRemote) — amd64-only source builds.
+          - name: hfdl
+            context: decoders/hfdl
+            image: sdr-research-hfdl
+            platforms: linux/amd64
+          - name: ft8-wspr
+            context: decoders/ft8-wspr
+            image: sdr-research-ft8-wspr
+            platforms: linux/amd64
+          - name: hf-combined
+            context: decoders/hf-combined
+            image: sdr-research-hf-combined
+            platforms: linux/amd64
           - name: sstv
             context: decoders/sstv
             image: sdr-research-sstv
-            platforms: linux/amd64,linux/arm64
+            platforms: linux/amd64   # slowrx-cli source build unverified on arm64
           - name: spectrum-exporter
             context: decoders/spectrum-exporter
             image: sdr-research-spectrum-exporter
             platforms: linux/amd64,linux/arm64
+          # SoapyRemote front-end servers — single-arch by the node the USB SDR is on.
+          - name: soapy-airspy
+            context: decoders/soapy-airspy
+            image: sdr-research-soapy-airspy
+            platforms: linux/arm64
+          - name: soapy-rx888
+            context: decoders/soapy-rx888
+            image: sdr-research-soapy-rx888
+            platforms: linux/amd64
+          # Operational services (pure-python, multi-arch).
+          - name: mcp
+            context: mcp
+            image: sdr-research-mcp
+            platforms: linux/amd64,linux/arm64
+          - name: watchdog
+            context: watchdog
+            image: sdr-research-watchdog
+            platforms: linux/amd64,linux/arm64
+          # Voice (Whisper) GPU build — CUDA base, amd64-only, published as a
+          # separate -cuda image alongside the default CPU `voice` image above.
+          - name: voice-cuda
+            context: decoders/voice
+            image: sdr-research-voice-cuda
+            platforms: linux/amd64
+            build_args: |
+              BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +146,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           platforms: ${{ matrix.platforms }}
+          build-args: ${{ matrix.build_args }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
