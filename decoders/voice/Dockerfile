@@ -20,7 +20,10 @@ RUN if [ ! -x "$(command -v python3)" ]; then \
       && rm -rf /var/lib/apt/lists/* ; \
     fi
 
-RUN pip install --no-cache-dir --break-system-packages \
+# Upgrade pip first: the CUDA base ships Ubuntu 22.04's pip 22.0, which predates
+# --break-system-packages (added in pip 23.0.1). python:slim already has a modern pip.
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+ && python3 -m pip install --no-cache-dir --break-system-packages \
       faster-whisper soundfile numpy
 
 COPY transcribe.py /app/transcribe.py
