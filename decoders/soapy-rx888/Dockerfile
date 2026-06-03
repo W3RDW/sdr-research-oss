@@ -14,9 +14,12 @@
 # Build:
 #   docker buildx build --platform linux/amd64 -t sdr-research-soapy-rx888 .
 #
-# Base image matches the production Dockerfile.soapy-rx888 (ubuntu:26.04 LTS),
-# which carries libsoapysdr-dev / libusb / libfftw3 for the ExtIO_sddc build below.
-FROM ubuntu:26.04
+# Built on ubuntu:22.04 (glibc 2.35) ON PURPOSE: this image's SoapySDDC plugin
+# (libSDDCSupport.so) is copied by an init container into the ft8-wspr decoder,
+# which is debian:bookworm-slim (glibc 2.36). A plugin built on a newer glibc
+# (ubuntu:26.04 = glibc 2.43) fails to dlopen there ("GLIBC_2.43 not found").
+# 22.04 keeps SoapySDR 0.8 / modules0.8 and carries libsoapysdr-dev/libusb/libfftw3.
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
