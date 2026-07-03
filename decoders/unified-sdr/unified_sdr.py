@@ -75,6 +75,12 @@ NUM_DYN_ACARS  = int(os.getenv("NUM_DYN_ACARS", "0"))
 # Without this, synthesizer noise during frequency switching triggers all squelch gates
 # simultaneously, producing a cluster of fake ~2s recordings at every retune.
 RF_SETTLE_SEC  = float(os.getenv("RF_SETTLE_SEC", "0.3"))
+# Noise guard: a real transmission has squelch drops between overs, so a slot
+# that hits N consecutive max-duration rollovers is recording a spur or an
+# open-squelch noise floor, not traffic. Deactivate it and blocklist the
+# frequency for a cooldown. 0 rollovers disables the guard.
+NOISE_GUARD_ROLLOVERS    = int(os.getenv("NOISE_GUARD_ROLLOVERS", "3"))
+NOISE_GUARD_COOLDOWN_SEC = float(os.getenv("NOISE_GUARD_COOLDOWN_SEC", "1800"))
 CAPTURE_ID     = os.getenv("CAPTURE_ID", "default").strip() or "default"
 FIXED_MONITOR_HZ = int(os.getenv("FIXED_MONITOR_HZ", "146520000"))
 
@@ -131,6 +137,9 @@ class SquelchRecorder(gr.sync_block):
         self.tail_counter  = 0
         self._lock         = threading.Lock()
         self._inhibit_until = float('inf') if inhibited else 0.0
+        # Consecutive max-duration rollovers; read by the noise guard.
+        self.consecutive_rollovers = 0
+        self._sumsq = 0.0
 
     def _open_wav(self):
         if self.is_cw:
@@ -144,6 +153,7 @@ class SquelchRecorder(gr.sync_block):
         self.wf.setsampwidth(2)
         self.wf.setframerate(self.audio_rate)
         self.samples_written = 0
+        self._sumsq = 0.0
         self.current_path = path
         print(f"[REC] Opened {path}", flush=True)
 
@@ -158,8 +168,10 @@ class SquelchRecorder(gr.sync_block):
             except OSError:
                 pass
         else:
+            rms_db = 10.0 * math.log10(self._sumsq / self.samples_written + 1e-30) \
+                if self.samples_written else -300.0
             print(f"[REC] Closed {self.current_path} "
-                  f"({self.samples_written / self.audio_rate:.1f}s)", flush=True)
+                  f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
         self.wf = None
 
     def close_if_recording(self):
@@ -184,6 +196,7 @@ class SquelchRecorder(gr.sync_block):
             if out_dir is not None:
                 self.out_dir = out_dir
             self._inhibit_until = 0.0
+            self.consecutive_rollovers = 0
 
     def deactivate(self):
         """Inhibit forever and close any open recording."""
@@ -210,6 +223,8 @@ class SquelchRecorder(gr.sync_block):
                     if self.tail_counter >= self.tail_samples:
                         self._close_wav()
                         self.state = self.IDLE
+                        # A squelch-close means real inter-transmission silence.
+                        self.consecutive_rollovers = 0
                         return n
                 else:
                     self.tail_counter = 0
@@ -218,9 +233,11 @@ class SquelchRecorder(gr.sync_block):
                 pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
                 self.wf.writeframes(pcm.tobytes())
                 self.samples_written += n
+                self._sumsq += rms * rms * n
                 # Roll over when the recording hits the max duration.
                 if self.samples_written >= self.max_samples:
                     print(f"[REC] Max duration reached, rolling over {self.current_path}", flush=True)
+                    self.consecutive_rollovers += 1
                     self._close_wav()
                     self._open_wav()
 
@@ -502,14 +519,43 @@ class FFTDetector(threading.Thread):
         super().__init__(daemon=True)
         self.tb = tb
         self.detections = []
+        # freq_hz -> blocklist expiry time (noise guard)
+        self.noise_blocklist = {}
 
     def run(self):
         while True:
             time.sleep(FFT_INTERVAL)
             try:
+                self._noise_guard()
                 self._scan_fft()
             except Exception as e:
                 print(f"[FFT] Error: {e}", flush=True)
+
+    def _noise_guard(self):
+        """Blocklist frequencies whose recorder only produces max-duration rollovers."""
+        if NOISE_GUARD_ROLLOVERS <= 0:
+            return
+        now = time.time()
+        for f, expiry in list(self.noise_blocklist.items()):
+            if now >= expiry:
+                del self.noise_blocklist[f]
+        for slots, free in ((self.tb.dyn_fm, self.tb._free_fm_slot),
+                            (self.tb.dyn_cw, self.tb._free_cw_slot),
+                            (self.tb.dyn_acars, self.tb._free_acars_slot)):
+            for slot in slots:
+                freq = slot["freq"]
+                if freq is None:
+                    continue
+                if slot["recorder"].consecutive_rollovers >= NOISE_GUARD_ROLLOVERS:
+                    self.noise_blocklist[freq] = now + NOISE_GUARD_COOLDOWN_SEC
+                    print(f"[GUARD] {freq/1e6:.4f} MHz produced "
+                          f"{NOISE_GUARD_ROLLOVERS} consecutive max-duration recordings — "
+                          f"blocklisted for {NOISE_GUARD_COOLDOWN_SEC:.0f}s", flush=True)
+                    free(slot)
+
+    def _is_blocklisted(self, freq_hz):
+        return any(abs(freq_hz - f) <= DYN_SLOT_FREQ_TOLERANCE_HZ
+                   for f in self.noise_blocklist)
 
     _fft_empty_count = 0
 
@@ -585,6 +631,8 @@ class FFTDetector(threading.Thread):
 
             # Assign to dynamic slot. Band-plan routing prevents quiet FM
             # repeater carriers from being misclassified into CW recorders.
+            if self._is_blocklisted(peak_freq):
+                continue
             if slot_mode == "ACARS":
                 self.tb._assign_acars_slot(int(round(peak_freq)))
             elif slot_mode == "FM":

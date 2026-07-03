@@ -54,6 +54,8 @@ need a manual `ALTER TABLE`.
 | `NUM_DYN_ACARS` | `0` | Dynamic AM (ACARS) slots. |
 | `DYN_SLOT_FREQ_TOLERANCE_HZ` | `2500` | Existing dynamic slot refresh tolerance. Prevents one drifting FFT peak from consuming multiple slots. |
 | `SLOT_RECYCLE_SEC` | `300` | Free unused slots after this. |
+| `NOISE_GUARD_ROLLOVERS` | `3` | Deactivate + blocklist a channel after this many consecutive `MAX_REC_SEC` rollovers (spur/birdie signature — real traffic has squelch drops between overs). `0` disables. |
+| `NOISE_GUARD_COOLDOWN_SEC` | `1800` | How long a noise-guarded frequency stays blocklisted. |
 | `FFT_SIZE` | `4096` | FFT bins. Higher = finer resolution, more CPU. |
 | `FFT_INTERVAL` | `1.0` | Seconds between detector runs. |
 
