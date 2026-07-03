@@ -10,6 +10,19 @@ from datetime import datetime, timedelta, timezone
 
 import urllib.request
 
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func, text as _sql_text
+from sqlalchemy.orm import Session
+
+from ..config import settings
+from ..database import get_db
+from ..models import AlertHistory, FrequencyLabel, Recording, Repeater
+from ..services.alerting import _send_webhook
+from ..services.indexer import maybe_set_ai_tags, maybe_set_frequency_metadata
+from ..services.repeater import sync_repeaters
+from ..services.transcription import queue_retranscription
+
 # Dedicated executor for SDR-health filesystem calls. Stale NFS handles can hang
 # `open()` / `glob` for minutes; we bound each call so a hung mount can never
 # block the event loop or starve the FastAPI worker threadpool.
@@ -33,18 +46,6 @@ def _bounded_fs_call(fn, *args, **kwargs):
     except (_FuturesTimeout, Exception):
         return None
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func, text as _sql_text
-from sqlalchemy.orm import Session
-
-from ..config import settings
-from ..database import get_db
-from ..models import AlertHistory, FrequencyLabel, Recording, Repeater
-from ..services.alerting import _send_webhook
-from ..services.indexer import maybe_set_ai_tags, maybe_set_frequency_metadata
-from ..services.repeater import sync_repeaters
-from ..services.transcription import queue_retranscription
 
 router = APIRouter()
 
