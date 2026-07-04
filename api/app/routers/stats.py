@@ -1,4 +1,5 @@
 import re
+import threading
 import time
 from collections import Counter
 from fastapi import APIRouter, Depends, Query, Response
@@ -53,15 +54,33 @@ except Exception as _e:
 
 _cache: dict = {}
 _CACHE_TTL = 60.0  # seconds
+_cache_lock = threading.Lock()
 
 
+# Sync `def` on purpose: FastAPI runs it in the threadpool, so the ~4 s of
+# full-table aggregation on a large recordings table cannot freeze the event
+# loop (which stalls every other request in the app). The lock makes the
+# recompute single-flight; concurrent callers get the previous snapshot.
 @router.get("")
-async def get_stats(response: Response, db: Session = Depends(get_db)):
+def get_stats(response: Response, db: Session = Depends(get_db)):
     response.headers["Cache-Control"] = "public, max-age=60"
     now = time.monotonic()
     if _cache.get("ts") and now - _cache["ts"] < _CACHE_TTL:
         return _cache["data"]
 
+    # Block only when there is no snapshot at all (first call after boot);
+    # otherwise serve the stale snapshot while one thread recomputes.
+    if not _cache_lock.acquire(blocking=_cache.get("data") is None):
+        return _cache["data"]
+    try:
+        if _cache.get("ts") and time.monotonic() - _cache["ts"] < _CACHE_TTL:
+            return _cache["data"]
+        return _compute_stats(db)
+    finally:
+        _cache_lock.release()
+
+
+def _compute_stats(db: Session):
     total_recordings = db.query(func.count(Recording.id)).scalar() or 0
     total_duration = db.query(func.sum(Recording.duration_seconds)).scalar() or 0.0
 
@@ -218,8 +237,8 @@ async def get_stats(response: Response, db: Session = Depends(get_db)):
         "by_hour": by_hour,
         "top_callsigns": top_callsigns,
     }
-    _cache["ts"] = now
     _cache["data"] = result
+    _cache["ts"] = time.monotonic()
     return result
 
 

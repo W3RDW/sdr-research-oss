@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 from datetime import datetime, timedelta, timezone
@@ -123,8 +124,37 @@ async def trigger_repeater_sync():
     return {"status": "sync started"}
 
 
+_status_cache: dict = {"ts": 0.0, "data": None}
+_STATUS_CACHE_TTL = 30.0  # seconds
+
+
+def _newest_sdr_heartbeat_mtime():
+    """Mtime of the newest capture heartbeat, O(#capture-ids).
+
+    Globbing the voice directory (tens of thousands of WAVs on NFS) inside a
+    request handler is what used to freeze this endpoint. The unified-sdr
+    captures rewrite one small heartbeat JSON every few seconds, which is the
+    honest "SDR alive" signal — and with a working squelch, hours without a
+    voice file is normal, so file mtimes were the wrong signal anyway.
+    """
+    det_dir = os.path.join(os.path.dirname(settings.audio_base_path), "detections")
+    beats = _glob.glob(os.path.join(det_dir, "sdr_heartbeat_*.json"))
+    if not beats:
+        return None
+    try:
+        return max(os.path.getmtime(f) for f in beats)
+    except OSError:
+        return None
+
+
+# Sync `def` on purpose: runs in the threadpool so the full-table aggregate
+# cannot freeze the event loop and stall unrelated requests.
 @router.get("/status")
-async def get_status(db: Session = Depends(get_db)):
+def get_status(db: Session = Depends(get_db)):
+    now = _time.monotonic()
+    if _status_cache["data"] is not None and now - _status_cache["ts"] < _STATUS_CACHE_TTL:
+        return _status_cache["data"]
+
     total_repeaters = db.query(func.count(Repeater.id)).scalar() or 0
     last_synced = db.query(func.max(Repeater.last_synced)).scalar()
     by_state = (
@@ -134,46 +164,36 @@ async def get_status(db: Session = Depends(get_db)):
         .order_by(func.count(Repeater.id).desc())
         .all()
     )
-    total_recordings = db.query(func.count(Recording.id)).scalar() or 0
-    pending_freq = (
-        db.query(func.count(Recording.id))
-        .filter(
-            Recording.frequency_hz.isnot(None),
-            Recording.frequency_label.is_(None),
-        )
-        .scalar() or 0
-    )
-    pending_tags = (
-        db.query(func.count(Recording.id))
-        .filter(Recording.ai_tags.is_(None), Recording.transcript.isnot(None))
-        .scalar() or 0
-    )
-    pending_transcripts = (
-        db.query(func.count(Recording.id))
-        .filter(
-            Recording.mode.in_(["voice", "cw"]),
-            Recording.transcript.is_(None),
-        )
-        .scalar() or 0
-    )
+    # One scan instead of four for the recording counters.
+    counters = db.execute(_sql_text(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE frequency_hz IS NOT NULL
+                                  AND frequency_label IS NULL) AS pending_freq,
+               count(*) FILTER (WHERE ai_tags IS NULL
+                                  AND transcript IS NOT NULL) AS pending_tags,
+               count(*) FILTER (WHERE mode IN ('voice', 'cw')
+                                  AND transcript IS NULL) AS pending_transcripts
+        FROM recordings
+        """
+    )).one()
     sdr_last_seen_seconds = None
-    try:
-        wav_files = _glob.glob(os.path.join(settings.audio_base_path, "voice", "*.wav"))
-        if wav_files:
-            newest_mtime = max(os.path.getmtime(f) for f in wav_files)
-            sdr_last_seen_seconds = int(_time.time() - newest_mtime)
-    except Exception:
-        pass
-    return {
+    newest_mtime = _bounded_fs_call(_newest_sdr_heartbeat_mtime)
+    if newest_mtime:
+        sdr_last_seen_seconds = int(_time.time() - newest_mtime)
+    data = {
         "total_repeaters": total_repeaters,
         "last_repeater_sync": last_synced.isoformat() if last_synced else None,
         "repeaters_by_state": {state: cnt for state, cnt in by_state},
-        "total_recordings": total_recordings,
-        "pending_freq_label": pending_freq,
-        "pending_ai_tags": pending_tags,
-        "pending_transcripts": pending_transcripts,
+        "total_recordings": counters.total or 0,
+        "pending_freq_label": counters.pending_freq or 0,
+        "pending_ai_tags": counters.pending_tags or 0,
+        "pending_transcripts": counters.pending_transcripts or 0,
         "sdr_last_seen_seconds": sdr_last_seen_seconds,
     }
+    _status_cache["data"] = data
+    _status_cache["ts"] = _time.monotonic()
+    return data
 
 
 @router.get("/alerts")
@@ -228,27 +248,28 @@ async def resend_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"status": "sent", "alert_id": alert_id}
 
 
-@router.get("/storage")
-async def get_storage():
-    def _dir_size(path: str) -> int:
+_storage_cache: dict = {"ts": 0.0, "data": None}
+_STORAGE_CACHE_TTL = 300.0  # seconds
+_storage_refresh_lock = threading.Lock()
+
+
+def _compute_storage() -> dict:
+    def _dir_size_and_count(path: str) -> tuple[int, int]:
         total = 0
+        count = 0
         if not os.path.isdir(path):
-            return total
+            return total, count
         for dirpath, _, filenames in os.walk(path):
             for f in filenames:
+                count += 1
                 try:
                     total += os.path.getsize(os.path.join(dirpath, f))
                 except OSError:
                     pass
-        return total
+        return total, count
 
-    def _dir_count(path: str) -> int:
-        if not os.path.isdir(path):
-            return 0
-        return sum(1 for _, _, files in os.walk(path) for _ in files)
-
-    audio_bytes = _dir_size(settings.audio_base_path)
-    cache_bytes = _dir_size(settings.cache_path)
+    audio_bytes, audio_files = _dir_size_and_count(settings.audio_base_path)
+    cache_bytes, _ = _dir_size_and_count(settings.cache_path)
     try:
         usage = shutil.disk_usage(settings.audio_base_path)
         free_bytes = usage.free
@@ -258,11 +279,41 @@ async def get_storage():
         total_bytes = 0
     return {
         "audio_bytes": audio_bytes,
-        "audio_files": _dir_count(settings.audio_base_path),
+        "audio_files": audio_files,
         "cache_bytes": cache_bytes,
         "free_bytes": free_bytes,
         "total_bytes": total_bytes,
     }
+
+
+# Sync `def` + cache: the full os.walk over the audio tree (tens of thousands
+# of files on NFS) took multi-second — and unbounded time on an NFS stall —
+# while blocking the event loop for the whole app. Serve the last snapshot
+# and refresh it in a single background thread at most every TTL.
+@router.get("/storage")
+def get_storage():
+    now = _time.monotonic()
+    cached = _storage_cache["data"]
+    if cached is not None and now - _storage_cache["ts"] < _STORAGE_CACHE_TTL:
+        return cached
+
+    if not _storage_refresh_lock.acquire(blocking=cached is None):
+        return cached  # a refresh is already running; serve the stale snapshot
+
+    def _refresh():
+        try:
+            data = _compute_storage()
+            _storage_cache["data"] = data
+            _storage_cache["ts"] = _time.monotonic()
+        finally:
+            _storage_refresh_lock.release()
+
+    if cached is None:
+        # First call since boot: compute inline (threadpool, not event loop).
+        _refresh()
+        return _storage_cache["data"]
+    threading.Thread(target=_refresh, daemon=True, name="storage-refresh").start()
+    return cached
 
 
 @router.post("/retention")
