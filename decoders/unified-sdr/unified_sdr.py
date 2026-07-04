@@ -111,6 +111,15 @@ DET_DIR        = "/data/detections"
 HEARTBEAT_PATH = os.path.join(DET_DIR, f"sdr_heartbeat_{CAPTURE_ID}.json")
 for d in (VOICE_DIR, CW_DIR, PAGER_DIR, DET_DIR):
     os.makedirs(d, exist_ok=True)
+    # Clear this capture's own orphaned in-progress files from a prior crash.
+    # The suffix is capture-scoped so parallel captures never touch each
+    # other's live .part files.
+    for stale in os.listdir(d):
+        if stale.endswith(f".{CAPTURE_ID}.part"):
+            try:
+                os.remove(os.path.join(d, stale))
+            except OSError:
+                pass
 
 # Frequency-based output routing — directs recordings to mode-specific
 # subdirectories so downstream decoders process only relevant files.
@@ -162,13 +171,15 @@ class SquelchRecorder(gr.sync_block):
         self._sumsq = 0.0
 
     def _open_wav(self):
-        if self.is_cw:
-            ts = int(time.time())
-            path = os.path.join(self.out_dir, f"cw_{self.freq_hz}_{ts}.wav")
-        else:
-            ts = int(time.time())
-            path = os.path.join(self.out_dir, f"{self.freq_hz}_{ts}.wav")
-        self.wf = wave.open(path, "wb")
+        ts = int(time.time())
+        prefix = "cw_" if self.is_cw else ""
+        path = os.path.join(self.out_dir, f"{prefix}{self.freq_hz}_{ts}.wav")
+        # Write under a temp name and rename on close: the indexer and the
+        # decoders glob *.wav, so they must never see an in-progress file —
+        # indexing one that is later discarded leaves an orphan DB row whose
+        # stream 404s in the UI.
+        self._tmp_path = f"{path}.{CAPTURE_ID}.part"
+        self.wf = wave.open(self._tmp_path, "wb")
         self.wf.setnchannels(1)
         self.wf.setsampwidth(2)
         self.wf.setframerate(self.audio_rate)
@@ -183,7 +194,7 @@ class SquelchRecorder(gr.sync_block):
         self.wf.close()
         if self.samples_written < self.min_samples:
             try:
-                os.remove(self.current_path)
+                os.remove(self._tmp_path)
                 print(f"[REC] Discarded short recording {self.current_path}", flush=True)
             except OSError:
                 pass
@@ -192,14 +203,18 @@ class SquelchRecorder(gr.sync_block):
                 if self.samples_written else -300.0
             if not self.is_cw and rms_db >= NOISE_DISCARD_RMS_DB:
                 try:
-                    os.remove(self.current_path)
+                    os.remove(self._tmp_path)
                     print(f"[REC] Discarded noise recording {self.current_path} "
                           f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
                 except OSError:
                     pass
             else:
-                print(f"[REC] Closed {self.current_path} "
-                      f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+                try:
+                    os.rename(self._tmp_path, self.current_path)
+                    print(f"[REC] Closed {self.current_path} "
+                          f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+                except OSError as e:
+                    print(f"[REC] Rename failed for {self.current_path}: {e}", flush=True)
         self.wf = None
 
     def close_if_recording(self):
