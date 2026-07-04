@@ -40,7 +40,12 @@ need a manual `ALTER TABLE`.
 
 | Var | Default | Notes |
 |---|---|---|
-| `RF_SQUELCH_DB` | `-50` | Hard squelch on RF magnitude (dBFS). |
+| `RF_SQUELCH_DB` | `-50` | RF squelch threshold (dBFS). With `AUTO_SQUELCH` (default) this is only the initial value until the first floor measurement. |
+| `AUTO_SQUELCH` | `1` | Track each FM channel's noise floor and hold the RF squelch `AUTO_SQUELCH_MARGIN_DB` above it. Static thresholds fail in both directions when the floor moves (gain/hardware/band changes): below the floor records noise 24/7, above real traffic records nothing. Logs `[SQL] <freq> lvl/floor/thr` lines for tuning. `0` = static threshold. |
+| `AUTO_SQUELCH_MARGIN_DB` | `6` | Squelch margin above the measured per-channel floor. |
+| `AUTO_SQUELCH_RISE_DB` | `0.1` | Max floor rise per interval while idle (dB); floor follows drops immediately and never rises during a recording. |
+| `AUTO_SQUELCH_MIN_DB` / `AUTO_SQUELCH_MAX_DB` | `-70` / `-25` | Clamp bounds for the derived threshold. |
+| `NOISE_DISCARD_RMS_DB` | `-9` | Discard any FM/AM recording whose audio RMS **over active (non-squelch-gated) samples** is at or above this. Demodulated FM noise bursts measure ~-7 dB active; real voice ~-15 dB. `100` disables. |
 | `SQUELCH_OPEN_DB` | `-50` | Audio squelch open threshold. |
 | `SQUELCH_CLOSE_DB` | `-55` | Audio squelch close threshold (hysteresis). |
 | `ENERGY_THRESH_DB` | `10` | FFT peak detection above noise floor. **Don't raise above 10** — breaks FM. |

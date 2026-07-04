@@ -35,6 +35,29 @@ TAIL_SEC       = float(os.getenv("TAIL_SEC", "1.5"))
 MIN_REC_SEC    = float(os.getenv("MIN_REC_SEC", "0.5"))
 MAX_REC_SEC    = float(os.getenv("MAX_REC_SEC", "120"))
 RF_SQUELCH_DB  = float(os.getenv("RF_SQUELCH_DB", "-50"))
+# Adaptive RF squelch: track each channel's noise floor and hold the squelch
+# threshold a fixed margin above it. Static thresholds have failed in both
+# directions here (below the floor → records noise 24/7; above real traffic →
+# records nothing), because the floor moves with gain, hardware, and band
+# conditions. RF_SQUELCH_DB is the initial threshold until the first
+# measurement. Set AUTO_SQUELCH=0 to keep a fixed threshold.
+AUTO_SQUELCH            = os.getenv("AUTO_SQUELCH", "1") not in ("0", "false", "no")
+AUTO_SQUELCH_MARGIN_DB  = float(os.getenv("AUTO_SQUELCH_MARGIN_DB", "6"))
+AUTO_SQUELCH_INTERVAL   = float(os.getenv("AUTO_SQUELCH_INTERVAL_SEC", "2"))
+# Floor estimate follows drops immediately, rises slowly (dB per interval) so a
+# transmission does not drag the floor up; it never rises while recording.
+AUTO_SQUELCH_RISE_DB    = float(os.getenv("AUTO_SQUELCH_RISE_DB", "0.1"))
+AUTO_SQUELCH_MIN_DB     = float(os.getenv("AUTO_SQUELCH_MIN_DB", "-70"))
+AUTO_SQUELCH_MAX_DB     = float(os.getenv("AUTO_SQUELCH_MAX_DB", "-25"))
+AUTO_SQUELCH_LOG_SEC    = float(os.getenv("AUTO_SQUELCH_LOG_SEC", "60"))
+# Demodulated FM noise is near full-scale while real voice averages ~-15 dB,
+# but a squelch-gated file is mostly zeros, so the metric must be computed
+# over ACTIVE samples only (a 33 s file of noise pops measured -11.5 dB whole
+# -file vs -7.0 dB active). Discard any FM/AM recording whose active RMS
+# lands at or above this. 100 disables.
+NOISE_DISCARD_RMS_DB    = float(os.getenv("NOISE_DISCARD_RMS_DB", "-9"))
+# Chunks below this RMS count as squelch-gated silence, not programme.
+ACTIVE_AUDIO_RMS        = 10 ** (-60 / 20.0)
 
 FFT_SIZE       = int(os.getenv("FFT_SIZE", "4096"))
 FFT_INTERVAL   = float(os.getenv("FFT_INTERVAL", "1.0"))
@@ -91,6 +114,15 @@ DET_DIR        = "/data/detections"
 HEARTBEAT_PATH = os.path.join(DET_DIR, f"sdr_heartbeat_{CAPTURE_ID}.json")
 for d in (VOICE_DIR, CW_DIR, PAGER_DIR, DET_DIR):
     os.makedirs(d, exist_ok=True)
+    # Clear this capture's own orphaned in-progress files from a prior crash.
+    # The suffix is capture-scoped so parallel captures never touch each
+    # other's live .part files.
+    for stale in os.listdir(d):
+        if stale.endswith(f".{CAPTURE_ID}.part"):
+            try:
+                os.remove(os.path.join(d, stale))
+            except OSError:
+                pass
 
 # Frequency-based output routing — directs recordings to mode-specific
 # subdirectories so downstream decoders process only relevant files.
@@ -140,20 +172,24 @@ class SquelchRecorder(gr.sync_block):
         # Consecutive max-duration rollovers; read by the noise guard.
         self.consecutive_rollovers = 0
         self._sumsq = 0.0
+        self._nactive = 0
 
     def _open_wav(self):
-        if self.is_cw:
-            ts = int(time.time())
-            path = os.path.join(self.out_dir, f"cw_{self.freq_hz}_{ts}.wav")
-        else:
-            ts = int(time.time())
-            path = os.path.join(self.out_dir, f"{self.freq_hz}_{ts}.wav")
-        self.wf = wave.open(path, "wb")
+        ts = int(time.time())
+        prefix = "cw_" if self.is_cw else ""
+        path = os.path.join(self.out_dir, f"{prefix}{self.freq_hz}_{ts}.wav")
+        # Write under a temp name and rename on close: the indexer and the
+        # decoders glob *.wav, so they must never see an in-progress file —
+        # indexing one that is later discarded leaves an orphan DB row whose
+        # stream 404s in the UI.
+        self._tmp_path = f"{path}.{CAPTURE_ID}.part"
+        self.wf = wave.open(self._tmp_path, "wb")
         self.wf.setnchannels(1)
         self.wf.setsampwidth(2)
         self.wf.setframerate(self.audio_rate)
         self.samples_written = 0
         self._sumsq = 0.0
+        self._nactive = 0
         self.current_path = path
         print(f"[REC] Opened {path}", flush=True)
 
@@ -163,15 +199,27 @@ class SquelchRecorder(gr.sync_block):
         self.wf.close()
         if self.samples_written < self.min_samples:
             try:
-                os.remove(self.current_path)
+                os.remove(self._tmp_path)
                 print(f"[REC] Discarded short recording {self.current_path}", flush=True)
             except OSError:
                 pass
         else:
-            rms_db = 10.0 * math.log10(self._sumsq / self.samples_written + 1e-30) \
-                if self.samples_written else -300.0
-            print(f"[REC] Closed {self.current_path} "
-                  f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+            rms_db = 10.0 * math.log10(self._sumsq / self._nactive + 1e-30) \
+                if self._nactive else -300.0
+            if not self.is_cw and rms_db >= NOISE_DISCARD_RMS_DB:
+                try:
+                    os.remove(self._tmp_path)
+                    print(f"[REC] Discarded noise recording {self.current_path} "
+                          f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.rename(self._tmp_path, self.current_path)
+                    print(f"[REC] Closed {self.current_path} "
+                          f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+                except OSError as e:
+                    print(f"[REC] Rename failed for {self.current_path}: {e}", flush=True)
         self.wf = None
 
     def close_if_recording(self):
@@ -233,7 +281,9 @@ class SquelchRecorder(gr.sync_block):
                 pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
                 self.wf.writeframes(pcm.tobytes())
                 self.samples_written += n
-                self._sumsq += rms * rms * n
+                if rms > ACTIVE_AUDIO_RMS:
+                    self._sumsq += rms * rms * n
+                    self._nactive += n
                 # Roll over when the recording hits the max duration.
                 if self.samples_written >= self.max_samples:
                     print(f"[REC] Max duration reached, rolling over {self.current_path}", flush=True)
@@ -298,9 +348,10 @@ class UnifiedSDR(gr.top_block):
         self.connect(self.src, self.xlate_fixed, self.rf_squelch_fixed,
                      self.nbfm_fixed, self.rec_fixed)
 
-        # --- RF power probe on fixed channel (for threshold tuning) ---
-        self.rf_probe_fixed = blocks.probe_signal_c()
-        self.connect(self.xlate_fixed, self.rf_probe_fixed)
+        # --- RF power probe on fixed channel (feeds AutoSquelch) ---
+        self.probe_fixed = analog.probe_avg_mag_sqrd_c(0, 0.001)
+        self.connect(self.xlate_fixed, self.probe_fixed)
+        self.fixed_sq_state = {}
 
         # --- Dynamic FM slots (pre-wired with inhibited recorders) ---
         self.dyn_fm = []
@@ -311,10 +362,13 @@ class UnifiedSDR(gr.top_block):
                 RF_SQUELCH_DB, 0.001, 10, False)
             nbfm = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
             rec = SquelchRecorder(0, AUDIO_RATE_FM, VOICE_DIR, inhibited=True)
+            probe = analog.probe_avg_mag_sqrd_c(0, 0.001)
             self.connect(self.src, xlate, rf_squelch, nbfm, rec)
+            self.connect(xlate, probe)
             self.dyn_fm.append({
                 "xlate": xlate, "rf_squelch": rf_squelch,
-                "nbfm": nbfm, "recorder": rec,
+                "nbfm": nbfm, "recorder": rec, "probe": probe,
+                "sq_state": {},
                 "freq": None, "assigned_at": None, "idx": i
             })
 
@@ -326,12 +380,20 @@ class UnifiedSDR(gr.top_block):
         for i in range(NUM_DYN_CW):
             xlate = filter.freq_xlating_fir_filter_ccf(
                 decim_cw, taps_cw, 0, SAMPLE_RATE)
+            # CW slots need an RF gate just like FM: without one, every noise
+            # blip in the CW subbands opens the envelope recorder and floods
+            # the cw decoder with undecodable files.
+            rf_squelch = analog.pwr_squelch_cc(
+                RF_SQUELCH_DB, 0.001, 10, False)
             c2mag = blocks.complex_to_mag()
             rec = SquelchRecorder(0, AUDIO_RATE_CW, CW_DIR, is_cw=True, inhibited=True)
-            self.connect(self.src, xlate, c2mag, rec)
+            probe = analog.probe_avg_mag_sqrd_c(0, 0.001)
+            self.connect(self.src, xlate, rf_squelch, c2mag, rec)
+            self.connect(xlate, probe)
             self.dyn_cw.append({
-                "xlate": xlate, "c2mag": c2mag,
-                "recorder": rec,
+                "xlate": xlate, "rf_squelch": rf_squelch, "c2mag": c2mag,
+                "recorder": rec, "probe": probe,
+                "sq_state": {},
                 "freq": None, "assigned_at": None, "idx": i
             })
 
@@ -423,6 +485,7 @@ class UnifiedSDR(gr.top_block):
         out_dir = route_voice_dir(freq_hz)
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz, out_dir)
+        target["sq_state"].clear()  # re-learn the noise floor at the new offset
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] FM slot {target['idx']} → {freq_hz/1e6:.4f} MHz ({os.path.basename(out_dir)})", flush=True)
@@ -445,6 +508,7 @@ class UnifiedSDR(gr.top_block):
         offset = freq_hz - self.get_center_hz()
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz)
+        target["sq_state"].clear()  # re-learn the noise floor at the new offset
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] CW slot {target['idx']} → {freq_hz/1e6:.4f} MHz", flush=True)
@@ -510,6 +574,12 @@ class UnifiedSDR(gr.top_block):
         self.src.set_center_freq(center_hz)
         with self._state_lock:
             self.current_center_hz = center_hz
+        # Channel offsets now point at different spectrum — re-learn floors.
+        self.fixed_sq_state.clear()
+        for slot in self.dyn_fm:
+            slot["sq_state"].clear()
+        for slot in self.dyn_cw:
+            slot["sq_state"].clear()
 
 # ---------------------------------------------------------------------------
 # FFT energy detector (background thread)
@@ -698,6 +768,73 @@ class ScanScheduler(threading.Thread):
             self.tb.inhibit_recordings(RF_SETTLE_SEC)
 
 # ---------------------------------------------------------------------------
+# Adaptive RF squelch (background thread)
+# ---------------------------------------------------------------------------
+class AutoSquelch(threading.Thread):
+    """Hold each FM channel's RF squelch a fixed margin above its measured noise floor.
+
+    The floor estimate follows level drops immediately and rises slowly
+    (AUTO_SQUELCH_RISE_DB per interval) while the channel is idle; it never
+    rises during a recording, so a long transmission cannot drag the
+    threshold up into itself. A steady spur becomes its channel's "floor",
+    which keeps the squelch shut on it — only power rising above the steady
+    state opens the gate.
+    """
+
+    def __init__(self, tb):
+        super().__init__(daemon=True)
+        self.tb = tb
+        self._last_log = 0.0
+        # Prior for a channel's first measurement: assume the static threshold
+        # was a sane margin above the true floor, so a channel assigned
+        # mid-transmission still opens for the in-progress signal.
+        self._floor_prior = RF_SQUELCH_DB - AUTO_SQUELCH_MARGIN_DB
+
+    def _update(self, name, probe, squelch, recorder, state):
+        level = 10.0 * math.log10(probe.level() + 1e-30)
+        floor = state.get("floor")
+        if floor is None:
+            floor = min(level, self._floor_prior)
+        elif level < floor:
+            floor = level
+        elif (recorder.state != SquelchRecorder.RECORDING
+              or recorder.consecutive_rollovers > 0):
+            # Rise while idle — and also during a recording that has already
+            # hit max duration: a carrier that never drops is a spur, and
+            # keeping the floor frozen under it would deadlock the channel
+            # open forever (the floor could never learn the spur level).
+            floor = min(floor + AUTO_SQUELCH_RISE_DB, level)
+        state["floor"] = floor
+        thr = min(max(floor + AUTO_SQUELCH_MARGIN_DB, AUTO_SQUELCH_MIN_DB),
+                  AUTO_SQUELCH_MAX_DB)
+        if state.get("thr") != thr:
+            squelch.set_threshold(thr)
+            state["thr"] = thr
+        return f"{name} lvl={level:.1f} floor={floor:.1f} thr={thr:.1f}"
+
+    def run(self):
+        time.sleep(5)  # let the flowgraph settle
+        while True:
+            try:
+                lines = [self._update(
+                    f"{self.tb.fixed_freq/1e6:.4f}", self.tb.probe_fixed,
+                    self.tb.rf_squelch_fixed, self.tb.rec_fixed,
+                    self.tb.fixed_sq_state)]
+                for slot in self.tb.dyn_fm + self.tb.dyn_cw:
+                    if slot["freq"] is None:
+                        continue
+                    lines.append(self._update(
+                        f"{slot['freq']/1e6:.4f}", slot["probe"],
+                        slot["rf_squelch"], slot["recorder"],
+                        slot["sq_state"]))
+                if time.time() - self._last_log >= AUTO_SQUELCH_LOG_SEC:
+                    print(f"[SQL] {' | '.join(lines)}", flush=True)
+                    self._last_log = time.time()
+            except Exception as e:
+                print(f"[SQL] Error: {e}", flush=True)
+            time.sleep(AUTO_SQUELCH_INTERVAL)
+
+# ---------------------------------------------------------------------------
 # RF power monitor (background thread — logs noise floor for squelch tuning)
 # ---------------------------------------------------------------------------
 class RFPowerMonitor(threading.Thread):
@@ -741,7 +878,8 @@ def main():
     print(f"  Slot tolerance: {DYN_SLOT_FREQ_TOLERANCE_HZ} Hz", flush=True)
     print(f"  FM bands:       {FM_RECORD_BANDS}", flush=True)
     print(f"  CW bands:       {CW_RECORD_BANDS}", flush=True)
-    print(f"  RF squelch:     {RF_SQUELCH_DB} dB", flush=True)
+    print(f"  RF squelch:     {RF_SQUELCH_DB} dB "
+          f"({'auto: floor+' + str(AUTO_SQUELCH_MARGIN_DB) + ' dB' if AUTO_SQUELCH else 'static'})", flush=True)
     print(f"  Scan centers:   {[f'{c/1e6:.1f}' for c in SCAN_CENTERS]} MHz", flush=True)
     print("=" * 60, flush=True)
 
@@ -758,6 +896,10 @@ def main():
 
     rf_mon = RFPowerMonitor(tb)
     rf_mon.start()
+
+    if AUTO_SQUELCH:
+        auto_squelch = AutoSquelch(tb)
+        auto_squelch.start()
 
     try:
         tb.wait()
