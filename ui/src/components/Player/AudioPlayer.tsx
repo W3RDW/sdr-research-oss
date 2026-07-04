@@ -59,12 +59,24 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
     }
   }, [showSpectrogram, isReady]);
 
+  // Late-arriving props (the waveform peaks resolve from their own query
+  // after the audio fetch has started) must NOT re-create the player: the
+  // teardown aborts the in-flight audio fetch and surfaces
+  // "AbortError: signal is aborted without reason" to the user.
+  const peaksRef = useRef(peaks);
+  peaksRef.current = peaks;
+  const audioDurationRef = useRef(audioDuration);
+  audioDurationRef.current = audioDuration;
+
   useEffect(() => {
     if (!containerRef.current) return;
 
+    let disposed = false;
     setError(null);
     setIsReady(false);
     spectrogramPluginRef.current = null;
+    const peaks = peaksRef.current;
+    const audioDuration = audioDurationRef.current;
 
     const wavesurfer = WaveSurfer.create({
       container: containerRef.current,
@@ -81,6 +93,7 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
 
     // Load timeout — if audio doesn't load within 30s, show error
     const timeout = setTimeout(() => {
+      if (disposed) return;
       if (!wavesurferRef.current || wavesurfer.getDuration() === 0) {
         setError("Audio loading timed out. The file may be unavailable.");
       }
@@ -103,6 +116,9 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
 
     wavesurfer.on("error", (err) => {
       clearTimeout(timeout);
+      // Tearing the player down (unmount / src change) aborts its fetch;
+      // that abort is not a user-facing failure.
+      if (disposed || /abort/i.test(String(err))) return;
       setError(`Failed to load audio: ${err}`);
     });
 
@@ -125,11 +141,12 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
     wavesurferRef.current = wavesurfer;
 
     return () => {
+      disposed = true;
       clearTimeout(timeout);
       spectrogramPluginRef.current = null;
       wavesurfer.destroy();
     };
-  }, [src, recordingId, peaks, audioDuration]);
+  }, [src, recordingId]);
 
   const handleRetry = () => {
     setError(null);

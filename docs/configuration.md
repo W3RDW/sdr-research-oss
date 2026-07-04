@@ -45,6 +45,7 @@ need a manual `ALTER TABLE`.
 | `AUTO_SQUELCH_MARGIN_DB` | `6` | Squelch margin above the measured per-channel floor. |
 | `AUTO_SQUELCH_RISE_DB` | `0.1` | Max floor rise per interval while idle (dB); floor follows drops immediately and never rises during a recording. |
 | `AUTO_SQUELCH_MIN_DB` / `AUTO_SQUELCH_MAX_DB` | `-70` / `-25` | Clamp bounds for the derived threshold. |
+| `NOISE_DISCARD_RMS_DB` | `-3` | Discard any FM/AM recording whose whole-file mean audio RMS is at or above this. Demodulated FM noise is full-scale (~+2.5 dB); real voice averages far below. `100` disables. |
 | `SQUELCH_OPEN_DB` | `-50` | Audio squelch open threshold. |
 | `SQUELCH_CLOSE_DB` | `-55` | Audio squelch close threshold (hysteresis). |
 | `ENERGY_THRESH_DB` | `10` | FFT peak detection above noise floor. **Don't raise above 10** — breaks FM. |

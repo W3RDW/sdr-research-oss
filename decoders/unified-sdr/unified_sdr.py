@@ -50,6 +50,11 @@ AUTO_SQUELCH_RISE_DB    = float(os.getenv("AUTO_SQUELCH_RISE_DB", "0.1"))
 AUTO_SQUELCH_MIN_DB     = float(os.getenv("AUTO_SQUELCH_MIN_DB", "-70"))
 AUTO_SQUELCH_MAX_DB     = float(os.getenv("AUTO_SQUELCH_MAX_DB", "-25"))
 AUTO_SQUELCH_LOG_SEC    = float(os.getenv("AUTO_SQUELCH_LOG_SEC", "60"))
+# Demodulated FM noise is full-scale (measured ~+2.5 dB mean RMS); real voice
+# averages well below (speech duty cycle keeps it under ~-10 dB). Discard any
+# FM/AM recording whose whole-file mean RMS lands above this — it is
+# guaranteed noise regardless of what the squelch thought. 100 disables.
+NOISE_DISCARD_RMS_DB    = float(os.getenv("NOISE_DISCARD_RMS_DB", "-3"))
 
 FFT_SIZE       = int(os.getenv("FFT_SIZE", "4096"))
 FFT_INTERVAL   = float(os.getenv("FFT_INTERVAL", "1.0"))
@@ -185,8 +190,16 @@ class SquelchRecorder(gr.sync_block):
         else:
             rms_db = 10.0 * math.log10(self._sumsq / self.samples_written + 1e-30) \
                 if self.samples_written else -300.0
-            print(f"[REC] Closed {self.current_path} "
-                  f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+            if not self.is_cw and rms_db >= NOISE_DISCARD_RMS_DB:
+                try:
+                    os.remove(self.current_path)
+                    print(f"[REC] Discarded noise recording {self.current_path} "
+                          f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
+                except OSError:
+                    pass
+            else:
+                print(f"[REC] Closed {self.current_path} "
+                      f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
         self.wf = None
 
     def close_if_recording(self):
@@ -751,7 +764,12 @@ class AutoSquelch(threading.Thread):
             floor = min(level, self._floor_prior)
         elif level < floor:
             floor = level
-        elif recorder.state != SquelchRecorder.RECORDING:
+        elif (recorder.state != SquelchRecorder.RECORDING
+              or recorder.consecutive_rollovers > 0):
+            # Rise while idle — and also during a recording that has already
+            # hit max duration: a carrier that never drops is a spur, and
+            # keeping the floor frozen under it would deadlock the channel
+            # open forever (the floor could never learn the spur level).
             floor = min(floor + AUTO_SQUELCH_RISE_DB, level)
         state["floor"] = floor
         thr = min(max(floor + AUTO_SQUELCH_MARGIN_DB, AUTO_SQUELCH_MIN_DB),

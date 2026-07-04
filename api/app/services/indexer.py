@@ -1924,6 +1924,24 @@ _CW_NODECODE_TIMEOUT = float(os.getenv("CW_NODECODE_TIMEOUT_SECONDS", "900"))
 _VOICE_NOTRANSCRIPT_TIMEOUT = float(
     os.getenv("VOICE_NOTRANSCRIPT_TIMEOUT_SECONDS", "3600")
 )
+# Grace before trusting an empty transcript file, so a write in progress is
+# never mistaken for a no-speech verdict.
+_EMPTY_TRANSCRIPT_GRACE_SEC = 120.0
+
+
+def _whisper_confirmed_empty(text_path: str, now: float) -> bool:
+    """True when Whisper wrote a transcript file with no content — its
+    verdict that the audio contains no speech (demodulated noise)."""
+    try:
+        st = os.stat(text_path)
+        if now - st.st_mtime < _EMPTY_TRANSCRIPT_GRACE_SEC:
+            return False
+        if st.st_size > 8:
+            return False
+        with open(text_path) as f:
+            return not f.read().strip()
+    except OSError:
+        return False
 
 def _sweep_pending_transcripts(ollama_budget, hamdb_budget):
     """
@@ -2009,10 +2027,20 @@ def _sweep_pending_transcripts(ollama_budget, hamdb_budget):
                         db.delete(rec)
                         db.commit()
                         updated += 1
+                    elif _whisper_confirmed_empty(text_path, now):
+                        # Whisper processed the file and emitted zero
+                        # segments: demodulated noise. Delete it like
+                        # failed CW instead of keeping a junk row forever.
+                        safe_unlink(rec.audio_path)
+                        safe_unlink(text_path)
+                        db.delete(rec)
+                        db.commit()
+                        updated += 1
                     elif wav_age >= _VOICE_NOTRANSCRIPT_TIMEOUT:
-                        # Whisper had its chance — stamp the row as failed
-                        # so it leaves pending. Audio is preserved in case
-                        # we want to retry later by hand.
+                        # Whisper never produced a transcript file (decoder
+                        # down or backlogged) — stamp the row as failed so
+                        # it leaves pending. Audio is preserved in case we
+                        # want to retry later by hand.
                         rec.transcript = "[no transcribable audio]"
                         db.commit()
                         updated += 1
