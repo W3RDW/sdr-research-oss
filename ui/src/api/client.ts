@@ -349,6 +349,7 @@ export interface AprsWeather {
 
 export interface AprsStation {
   callsign: string;
+  source?: string;   // "rf" (own antenna) | "aprs-is" (internet)
   path: string;
   latitude: number | null;
   longitude: number | null;

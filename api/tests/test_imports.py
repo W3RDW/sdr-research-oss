@@ -17,7 +17,10 @@ ROUTERS = [
     "search", "spots", "stats", "waveform", "weather",
 ]
 SERVICES = [
-    "alerting", "aprs_is", "audio", "hamdb", "indexer",
+    "alerting", "aprs_is",
+    "satellites",
+    "world_spots",
+    "activity_feeds", "audio", "hamdb", "indexer",
     "known_freqs", "metrics", "repeater", "tagging", "transcription",
 ]
 

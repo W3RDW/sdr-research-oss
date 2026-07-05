@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import {
+import api, {
   browseSpots,
   getSpotMap,
   getSpotStats,
@@ -29,6 +29,93 @@ function formatFrequency(hz: number | null): string {
   if (hz >= 1_000_000) return `${(hz / 1_000_000).toFixed(3)} MHz`;
   if (hz >= 1_000) return `${(hz / 1_000).toFixed(1)} kHz`;
   return `${hz} Hz`;
+}
+
+interface ComparisonSample {
+  callsign: string;
+  band: string | null;
+  my_snr: number | null;
+  world_receivers: number;
+  world_best_snr?: number;
+  world_median_snr?: number;
+  my_rank_pct?: number | null;
+  sampled_at: number;
+}
+
+interface ComparisonResponse {
+  enabled: boolean;
+  poll_seconds?: number;
+  samples: ComparisonSample[];
+  health_score: number | null;
+}
+
+function healthColor(score: number | null): string {
+  if (score == null) return "text-gray-400";
+  if (score >= 60) return "text-green-400";
+  if (score >= 35) return "text-yellow-400";
+  return "text-red-400";
+}
+
+function AntennaVsWorld() {
+  const { data } = useQuery<ComparisonResponse>({
+    queryKey: ["spots-comparison"],
+    queryFn: async () => (await api.get("/stats/spots/comparison")).data,
+    refetchInterval: 120_000,
+  });
+
+  if (!data || !data.enabled) return null;
+
+  return (
+    <div className="bg-gray-800/50 rounded-lg px-4 py-3 mb-4 border border-gray-700">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500 font-medium uppercase tracking-wide">
+          Antenna vs World (PSKReporter)
+        </span>
+        <span className={`text-sm font-bold ${healthColor(data.health_score)}`}>
+          {data.health_score != null
+            ? `health: ${data.health_score}th percentile`
+            : "collecting samples\u2026"}
+        </span>
+      </div>
+      {data.samples.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          No samples yet \u2014 one decoded callsign is compared against the
+          world's monitors every {(data.poll_seconds ?? 600) / 60} minutes.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="text-xs w-full">
+            <thead>
+              <tr className="text-gray-500 text-left">
+                <th className="pr-3 py-1">Callsign</th>
+                <th className="pr-3">Band</th>
+                <th className="pr-3">My SNR</th>
+                <th className="pr-3">World median</th>
+                <th className="pr-3">World best</th>
+                <th className="pr-3">Receivers</th>
+                <th>My rank</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.samples.slice(0, 8).map((s) => (
+                <tr key={`${s.callsign}-${s.sampled_at}`} className="border-t border-gray-700/50">
+                  <td className="pr-3 py-1"><CallsignLink callsign={s.callsign} /></td>
+                  <td className="pr-3">{s.band ?? "\u2014"}</td>
+                  <td className="pr-3">{s.my_snr != null ? `${s.my_snr} dB` : "\u2014"}</td>
+                  <td className="pr-3">{s.world_median_snr != null ? `${s.world_median_snr} dB` : "\u2014"}</td>
+                  <td className="pr-3">{s.world_best_snr != null ? `${s.world_best_snr} dB` : "\u2014"}</td>
+                  <td className="pr-3">{s.world_receivers}</td>
+                  <td className={healthColor(s.my_rank_pct ?? null)}>
+                    {s.my_rank_pct != null ? `${s.my_rank_pct}%` : "\u2014"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const BAND_COLORS: Record<string, string> = {
@@ -213,6 +300,8 @@ export default function SpotsPage() {
           {totalSpots.toLocaleString()} spot{totalSpots !== 1 ? "s" : ""}
         </div>
       </div>
+
+      <AntennaVsWorld />
 
       {/* Band Activity Header -- clickable pills for all HF bands */}
       <div className="bg-gray-800/50 rounded-lg px-4 py-3 mb-4 border border-gray-700">

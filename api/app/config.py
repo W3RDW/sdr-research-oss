@@ -14,6 +14,20 @@ class Settings(BaseSettings):
     ollama_max_tags: int = 8
     ollama_max_per_cycle: int = 40
 
+    # Station identity (spots comparison, satellite passes, APRS-IS overlay)
+    station_callsign: str = "N0CALL"
+    station_grid: str = ""               # Maidenhead locator, e.g. EM79
+    station_lat: float = 0.0             # 0 = fall back to repeaterbook_latitude
+    station_lon: float = 0.0             # 0 = fall back to repeaterbook_longitude
+
+    # Satellite recording windows (written for unified-sdr to arm recorders)
+    sat_windows_enabled: bool = True
+    sat_record_min_elevation: float = 15.0
+
+    # PSKReporter comparison ("antenna vs world")
+    pskreporter_enabled: bool = True
+    pskreporter_poll_seconds: int = 600  # be polite: one sampled query per cycle
+
     # HamDB callsign lookup
     hamdb_enabled: bool = True
     hamdb_cache_days: int = 30

@@ -12,6 +12,16 @@ See [`.env.example`](../.env.example) for a copy-paste-ready template.
 | `STATION_LAT` / `STATION_LON` | `0.0` | Distance calcs (Haversine). |
 | `OPERATOR_EMAIL` | `operator@example.com` | Default User-Agent contact. |
 
+## Antenna-vs-world / satellites / activity (v0.3.0)
+
+| Var | Default | Notes |
+|---|---|---|
+| `PSKREPORTER_ENABLED` | `true` | Rolling comparison of own FT8/WSPR decodes vs PSKReporter monitors (one polite query per poll). |
+| `PSKREPORTER_POLL_SECONDS` | `600` | Min seconds between PSKReporter queries. |
+| `SAT_WINDOWS_ENABLED` | `true` | Indexer writes upcoming downlink pass windows to `/data/detections/sat_windows.json`; unified-sdr arms a recorder slot during each pass. |
+| `SAT_RECORD_MIN_ELEVATION` | `15` | Minimum pass elevation (deg) worth recording. |
+| `STATION_LAT` / `STATION_LON` | `0` | Station coordinates; fall back to `REPEATERBOOK_LATITUDE/_LONGITUDE`. |
+
 ## Database
 
 | Var | Default | Notes |
