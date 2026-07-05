@@ -221,3 +221,12 @@ def spot_stats(
         "farthest": farthest_list,
         "by_hour": [dict(r) for r in hourly],
     }
+
+# ── antenna vs world (PSKReporter comparison) ────────────────────────
+@router.get("/comparison")
+def spots_comparison(db: Session = Depends(get_db)):
+    """Rolling comparison of this station's decodes vs PSKReporter monitors."""
+    _ensure_table(db)
+    from ..services.world_spots import get_comparison
+    return get_comparison(db)
+

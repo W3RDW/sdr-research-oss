@@ -687,14 +687,15 @@ const APRS_SYMBOL_SHAPES: Record<string, { emoji: string }> = {
 function AprsMarker({ s, symbolInfo }: { s: AprsStation; symbolInfo: { label: string; color: string } }) {
   if (s.latitude == null || s.longitude == null) return null;
   const isWx = s.is_weather === true;
-  const color = isWx ? "#22d3ee" : symbolInfo.color;
+  const isNet = s.source === "aprs-is";
+  const color = isWx ? "#22d3ee" : isNet ? "#a78bfa" : symbolInfo.color;
   const wx = s.weather;
   const symbolShape = APRS_SYMBOL_SHAPES[symbolInfo.label];
 
   // Use a divIcon with emoji for recognized symbols, CircleMarker for others
   if (symbolShape && !isWx) {
     const icon = L.divIcon({
-      html: `<div style="font-size:18px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.8));">${symbolShape.emoji}</div>`,
+      html: `<div style="font-size:18px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.8));${isNet ? "opacity:0.55;" : ""}">${symbolShape.emoji}</div>`,
       className: "",
       iconSize: [22, 22],
       iconAnchor: [11, 11],

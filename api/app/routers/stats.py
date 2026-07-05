@@ -541,3 +541,10 @@ async def band_activity(response: Response, hours: int = 1, db: Session = Depend
     bands.sort(key=lambda b: _BAND_ORDER.get(b["band"], 99))
 
     return {"hours": hours, "bands": bands}
+
+# ── On-air activity feeds (POTA / SOTA / contests) ───────────────────────────
+@router.get("/activity/feeds")
+def activity_feeds():
+    from ..services.activity_feeds import get_activity_feeds
+    return get_activity_feeds()
+

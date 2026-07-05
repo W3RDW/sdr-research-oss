@@ -27,6 +27,8 @@ const TagsPage = lazy(() => import("./pages/TagsPage"));
 const ComparePage = lazy(() => import("./pages/ComparePage"));
 const SpectrumPage = lazy(() => import("./pages/SpectrumPage"));
 const WeatherPage = lazy(() => import("./pages/WeatherPage"));
+const PropagationPage = lazy(() => import("./pages/PropagationPage"));
+const ActivityPage = lazy(() => import("./pages/ActivityPage"));
 
 function LoadingSpinner() {
   return (
@@ -76,6 +78,8 @@ function App() {
             <Route path="compare" element={<LazyPage Component={ComparePage} />} />
             <Route path="spectrum" element={<LazyPage Component={SpectrumPage} />} />
             <Route path="weather" element={<LazyPage Component={WeatherPage} />} />
+            <Route path="propagation" element={<LazyPage Component={PropagationPage} />} />
+            <Route path="activity" element={<LazyPage Component={ActivityPage} />} />
           </Route>
         </Routes>
       </ErrorBoundary>

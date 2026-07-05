@@ -1808,6 +1808,7 @@ def _refresh_db_gauges():
 
 # Track last auto-retention and digest run times
 _last_auto_retention: float = 0.0
+_last_sat_windows: float = 0.0
 _last_daily_digest: float = 0.0
 _last_digest_sent: datetime | None = None
 _AUTO_RETENTION_INTERVAL = 86400.0   # 24 hours
@@ -2384,6 +2385,20 @@ async def run_indexer():
                 _last_daily_digest = _time.time()
             except Exception as _dd_err:
                 print(f"[DailyDigest] task error: {_dd_err}")
+
+        # Satellite recording windows for unified-sdr (10-minute refresh)
+        global _last_sat_windows
+        if _time.time() - _last_sat_windows >= 600:
+            try:
+                from .satellites import sync_sat_windows
+                det_dir = os.path.join(
+                    os.path.dirname(settings.audio_base_path), "detections")
+                n = await asyncio.to_thread(sync_sat_windows, det_dir)
+                _last_sat_windows = _time.time()
+                if n:
+                    print(f"[SatWindows] wrote {n} upcoming downlink windows")
+            except Exception as _sw_err:
+                print(f"[SatWindows] task error: {_sw_err}")
 
         # SDR hardware health — parse timestamp from filename; no stat calls.
         # With 30k+ WAV files, glob+getmtime blocks for minutes. os.listdir

@@ -22,6 +22,7 @@ from ..models import AlertHistory, FrequencyLabel, Recording, Repeater
 from ..services.alerting import _send_webhook
 from ..services.indexer import maybe_set_ai_tags, maybe_set_frequency_metadata
 from ..services.repeater import sync_repeaters
+from ..services.satellites import fetch_satellite_tles as _fetch_sat_tles, station_coords as _station_coords
 from ..services.transcription import queue_retranscription
 
 # Dedicated executor for SDR-health filesystem calls. Stale NFS handles can hang
@@ -1004,7 +1005,59 @@ async def _fetch_propagation_data() -> dict:
     result["hf_conditions"] = _derive_hf_conditions(
         result["solar_flux_index"], result["k_index"]
     )
+
+    # N0NBH per-band day/night ratings (hamqsl.com) + VHF phenomena
+    try:
+        result["band_conditions"] = _fetch_n0nbh_conditions()
+    except Exception:
+        result["band_conditions"] = None
+
+    # Well-known imagery for the dashboard (rendered client-side)
+    result["imagery"] = {
+        "muf_map": "https://prop.kc2g.com/renders/current/mufd-normal-now.svg",
+        "fof2_map": "https://prop.kc2g.com/renders/current/fof2-normal-now.svg",
+        "sdo_304": "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_0304.jpg",
+        "sdo_hmi": "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_HMIIC.jpg",
+        "drap": "https://services.swpc.noaa.gov/images/animations/d-rap/global/d-rap/latest.png",
+    }
     return result
+
+
+_N0NBH_URL = "https://www.hamqsl.com/solarxml.php"
+
+
+def _fetch_n0nbh_conditions() -> dict:
+    """N0NBH solar widget XML: per-band day/night ratings + extra indices."""
+    import xml.etree.ElementTree as _ET
+    req = urllib.request.Request(
+        _N0NBH_URL, headers={"User-Agent": "SDRViewer/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        root = _ET.fromstring(resp.read())
+    out = {"bands": {}, "vhf": {}}
+    solar = root.find("solardata")
+    if solar is None:
+        return out
+    def _txt(tag):
+        el = solar.find(tag)
+        return el.text.strip() if el is not None and el.text else None
+    out["a_index"] = _txt("aindex")
+    out["sunspots"] = _txt("sunspots")
+    out["xray"] = _txt("xray")
+    out["signal_noise"] = _txt("signalnoise")
+    out["geomag_field"] = _txt("geomagfield")
+    out["aurora"] = _txt("aurora")
+    out["muf"] = _txt("muf")
+    for band in solar.iter("band"):
+        name = band.get("name")
+        tod = band.get("time")  # "day" / "night"
+        if name and tod and band.text:
+            out["bands"].setdefault(name, {})[tod] = band.text.strip()
+    for phen in solar.iter("phenomenon"):
+        name = phen.get("name")
+        loc = phen.get("location")
+        if name and loc and phen.text:
+            out["vhf"].setdefault(name, {})[loc] = phen.text.strip()
+    return out
 
 
 @router.get("/propagation")
@@ -1052,98 +1105,15 @@ async def get_propagation():
 # Satellite pass prediction — TLE data + frequencies for ham satellites
 # ---------------------------------------------------------------------------
 
-_HAM_SATELLITES = [
-    {"norad_id": 25544, "name": "ISS (ZARYA)", "frequencies": [
-        {"mhz": 145.800, "mode": "FM Voice/APRS", "direction": "downlink"},
-        {"mhz": 437.800, "mode": "SSTV", "direction": "downlink"},
-    ]},
-    {"norad_id": 25338, "name": "NOAA-15", "frequencies": [
-        {"mhz": 137.620, "mode": "APT", "direction": "downlink"},
-    ]},
-    {"norad_id": 28654, "name": "NOAA-18", "frequencies": [
-        {"mhz": 137.9125, "mode": "APT", "direction": "downlink"},
-    ]},
-    {"norad_id": 33591, "name": "NOAA-19", "frequencies": [
-        {"mhz": 137.100, "mode": "APT", "direction": "downlink"},
-    ]},
-    {"norad_id": 43013, "name": "NOAA-20 (JPSS-1)", "frequencies": [
-        {"mhz": 137.200, "mode": "APT", "direction": "downlink"},
-    ]},
-    {"norad_id": 43017, "name": "AO-91 (Fox-1B)", "frequencies": [
-        {"mhz": 145.960, "mode": "FM Uplink", "direction": "uplink"},
-        {"mhz": 435.250, "mode": "FM Downlink", "direction": "downlink"},
-    ]},
-    {"norad_id": 27607, "name": "SO-50 (SaudiSat-1C)", "frequencies": [
-        {"mhz": 145.850, "mode": "FM Uplink", "direction": "uplink"},
-        {"mhz": 436.795, "mode": "FM Downlink", "direction": "downlink"},
-    ]},
-    {"norad_id": 48274, "name": "CSS (Tianhe)", "frequencies": [
-        {"mhz": 437.550, "mode": "Telemetry", "direction": "downlink"},
-    ]},
-    {"norad_id": 7530,  "name": "AMSAT-OSCAR 7", "frequencies": [
-        {"mhz": 145.950, "mode": "CW Beacon", "direction": "downlink"},
-        {"mhz": 29.502,  "mode": "SSB/CW Transponder", "direction": "downlink"},
-    ]},
-    {"norad_id": 54684, "name": "TEVEL-3", "frequencies": [
-        {"mhz": 436.400, "mode": "FM Transponder", "direction": "downlink"},
-    ]},
-]
-
-_tle_cache: dict = {}
-_TLE_CACHE_TTL = 21600  # 6 hours
-
-
-async def _fetch_satellite_tles() -> list[dict]:
-    """Fetch TLE data for ham satellites from Celestrak, cached for 6 hours."""
-    now = _time.monotonic()
-    if (
-        _tle_cache.get("ts") is not None
-        and now - _tle_cache["ts"] < _TLE_CACHE_TTL
-        and _tle_cache.get("data")
-    ):
-        return _tle_cache["data"]
-
-    results = []
-    for sat_info in _HAM_SATELLITES:
-        norad_id = sat_info["norad_id"]
-        try:
-            url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=TLE"
-            req = urllib.request.Request(url, headers={"User-Agent": "SDRViewer/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                text = resp.read().decode().strip()
-            lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-            if len(lines) < 3 or not lines[1].startswith("1 ") or not lines[2].startswith("2 "):
-                continue
-            results.append({
-                "norad_id": norad_id,
-                "name": sat_info["name"],
-                "tle_name": lines[0],
-                "tle_line1": lines[1],
-                "tle_line2": lines[2],
-                "frequencies": sat_info["frequencies"],
-            })
-        except Exception:
-            continue
-
-    if results:
-        _tle_cache["ts"] = now
-        _tle_cache["data"] = results
-    elif _tle_cache.get("data"):
-        return _tle_cache["data"]
-
-    return results
-
-
 @router.get("/satellite-passes")
 async def get_satellite_passes(hours: int = 24, min_elevation: float = 10.0):
     """Return TLE data and frequencies for ham satellites.
     Pass prediction is computed client-side using satellite.js.
     """
-    lat = settings.repeaterbook_latitude
-    lng = settings.repeaterbook_longitude
-    station = {"latitude": float(lat) if lat else None, "longitude": float(lng) if lng else None}
+    lat, lng = _station_coords()
+    station = {"latitude": lat or None, "longitude": lng or None}
 
-    satellites = await _fetch_satellite_tles()
+    satellites = _fetch_sat_tles()
 
     return {
         "station": station,
