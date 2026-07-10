@@ -56,3 +56,4 @@ secrets/
 *.sops.yaml
 *.age
 age.key
+.claude/worktrees/noise-guard/
