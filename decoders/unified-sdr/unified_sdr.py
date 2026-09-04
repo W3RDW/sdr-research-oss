@@ -22,7 +22,7 @@ _rtl_port_raw  = os.getenv("RTL_TCP_PORT", "1234")  # k8s injects "tcp://IP:PORT
 RTL_TCP_PORT   = int(_rtl_port_raw.rsplit(":", 1)[-1].strip("/"))
 # If set, overrides the rtl_tcp device string entirely (e.g. SoapyRemote for Airspy):
 #   soapy=0,remote=airspy-soapy.sdr-research.svc.cluster.local:55132,driver=airspy
-OSMOSDR_ARGS   = os.getenv("OSMOSDR_ARGS", "")
+OSMOSDR_ARGS   = os.getenv("OSMOSDR_ARGS", "rtl=0")
 SAMPLE_RATE    = int(os.getenv("SAMPLE_RATE", "2400000"))
 DWELL_CENTER   = int(os.getenv("DWELL_CENTER_HZ", "146000000"))
 SCAN_CENTERS   = json.loads(os.getenv("SCAN_CENTERS", "[]"))

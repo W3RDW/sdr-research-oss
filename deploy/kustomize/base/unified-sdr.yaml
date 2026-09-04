@@ -26,7 +26,7 @@ spec:
           securityContext: {privileged: true}
           env:
             - {name: CAPTURE_ID, value: "2m"}
-            - {name: OSMOSDR_ARGS, value: "rtl_tcp=rtl-tcp:1234"}
+            - {name: OSMOSDR_ARGS, value: "rtl=0"}
             - {name: SAMPLE_RATE, value: "2400000"}
             - {name: DWELL_CENTER_HZ, value: "146000000"}
             - {name: FIXED_MONITOR_HZ, value: "146520000"}

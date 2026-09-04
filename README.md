@@ -83,7 +83,7 @@ Notable knobs:
 
 | Var | What | Default |
 |---|---|---|
-| `OSMOSDR_ARGS` | SDR device string | `rtl_tcp=rtl-tcp:1234` |
+| `OSMOSDR_ARGS` | SDR device string | `rtl=0` (attached RTL-SDR) |
 | `DWELL_CENTER_HZ` | Center frequency to monitor | `146000000` (2m) |
 | `SAMPLE_RATE` | SDR sample rate | `2400000` |
 | `RF_SQUELCH_DB` | Squelch threshold (dBFS) | `-50` |

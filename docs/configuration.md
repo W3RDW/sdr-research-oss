@@ -35,7 +35,7 @@ need a manual `ALTER TABLE`.
 
 | Var | Default | Notes |
 |---|---|---|
-| `OSMOSDR_ARGS` | `rtl_tcp=rtl-tcp:1234` | See [hardware-matrix.md](hardware-matrix.md). |
+| `OSMOSDR_ARGS` | `rtl=0` (attached RTL-SDR) | See [hardware-matrix.md](hardware-matrix.md). |
 | `CAPTURE_ID` | `default` | Free-form label. Used in artifact filenames. |
 | `SAMPLE_RATE` | `2400000` | Hz. RTL=2.4M, Airspy=3M or 6M, RX888=64M. |
 | `DWELL_CENTER_HZ` | `146000000` | Hz. Center of capture band. |

@@ -90,7 +90,7 @@ services:
       - /dev/bus/usb:/dev/bus/usb  # all USB devices
     environment:
       CAPTURE_ID: ${CAPTURE_ID:-2m}
-      OSMOSDR_ARGS: ${OSMOSDR_ARGS:-rtl_tcp=rtl-tcp:1234}
+      OSMOSDR_ARGS: ${OSMOSDR_ARGS:-rtl=0}
       SAMPLE_RATE: ${SAMPLE_RATE:-2400000}
       DWELL_CENTER_HZ: ${DWELL_CENTER_HZ:-146000000}
       FIXED_MONITOR_HZ: ${FIXED_MONITOR_HZ:-146520000}

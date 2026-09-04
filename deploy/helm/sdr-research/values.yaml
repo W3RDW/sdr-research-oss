@@ -87,7 +87,7 @@ unifiedSdr:
   privileged: true
   hostUsbPath: /dev/bus/usb
   # OSMOSDR_ARGS — see docs/hardware-matrix.md
-  osmosdrArgs: "rtl_tcp=rtl-tcp:1234"
+  osmosdrArgs: "rtl=0"
   sampleRate: 2400000
   dwellCenterHz: 146000000
   fixedMonitorHz: 146520000

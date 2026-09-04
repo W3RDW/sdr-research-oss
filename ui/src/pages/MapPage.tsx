@@ -403,10 +403,12 @@ function MapPage() {
         <div className="text-center py-16 text-gray-400">Loading…</div>
       )}
       {repError && (
-        <div className="text-red-400 py-8">Failed to load: {String(repError)}</div>
+        <div className="mb-3 rounded-md border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          Repeater data is temporarily unavailable. The base map and other live layers remain available.
+        </div>
       )}
 
-      {!isLoading && !repError && (
+      {!isLoading && (
         <>
           <div className="flex flex-wrap gap-4 mb-3 text-xs text-gray-400">
             <span className="flex items-center gap-1">
@@ -491,8 +493,8 @@ function MapPage() {
               style={{ height: "100%", width: "100%" }}
             >
               <TileLayer
-                attribution='&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
               {showRadar && radarTileUrl && (
                 <TileLayer
