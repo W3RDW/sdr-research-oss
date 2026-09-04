@@ -633,6 +633,11 @@ async def stream_file(file_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Recording not found")
 
     audio_path = recording.audio_path
+    # Text-only records (for example APRS packets) deliberately do not have
+    # an audio artifact.  Do not pass None to os.path.exists(): that turns a
+    # normal unavailable-audio response into an unhandled 500.
+    if not audio_path:
+        raise HTTPException(status_code=404, detail="This recording has no audio file")
     if not os.path.exists(audio_path):
         raise HTTPException(status_code=404, detail="Audio file not found")
 

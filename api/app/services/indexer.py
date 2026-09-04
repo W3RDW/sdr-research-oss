@@ -47,6 +47,19 @@ _PARTITION_MODES = [
 ]
 
 
+def _recordings_partitioning_enabled() -> bool:
+    """Whether to run the destructive table-layout migration at startup.
+
+    Partitioning is a useful opt-in migration for a planned maintenance
+    window, but copying a large live recordings table can hold locks long
+    enough to interrupt capture and browsing.  Normal application startups
+    must therefore leave an existing table in place.
+    """
+    return os.getenv("ENABLE_RECORDINGS_PARTITIONING", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
 def _ensure_partitioned_recordings_indexes(conn) -> None:
     """Create indexes that pre-date partitioning on either a fresh or old partitioned table."""
     for statement in (
@@ -2227,11 +2240,13 @@ async def run_indexer():
     except Exception:
         pass
 
-    # One-time migration: partition recordings table by mode for 500k+ scale
-    try:
-        await asyncio.to_thread(_maybe_partition_recordings)
-    except Exception as _part_err:
-        print(f"[Partition] Migration error (non-fatal): {_part_err}")
+    # Partitioning copies the full recordings table, so only run it when an
+    # operator deliberately enables it during a maintenance window.
+    if _recordings_partitioning_enabled():
+        try:
+            await asyncio.to_thread(_maybe_partition_recordings)
+        except Exception as _part_err:
+            print(f"[Partition] Migration error (non-fatal): {_part_err}")
 
     # Purge any [no decodable cw] stubs left over from before auto-delete
     try:

@@ -785,16 +785,17 @@ class AutoSquelch(threading.Thread):
         super().__init__(daemon=True)
         self.tb = tb
         self._last_log = 0.0
-        # Prior for a channel's first measurement: assume the static threshold
-        # was a sane margin above the true floor, so a channel assigned
-        # mid-transmission still opens for the in-progress signal.
-        self._floor_prior = RF_SQUELCH_DB - AUTO_SQUELCH_MARGIN_DB
 
     def _update(self, name, probe, squelch, recorder, state):
         level = 10.0 * math.log10(probe.level() + 1e-30)
         floor = state.get("floor")
         if floor is None:
-            floor = min(level, self._floor_prior)
+            # Establish the floor from a real settled measurement.  Starting
+            # from a guessed, quieter floor can open every newly assigned
+            # channel on receiver noise.  Because active recorders freeze
+            # their floor, that false open then cannot self-correct until
+            # several max-duration rollovers have elapsed.
+            floor = level
         elif level < floor:
             floor = level
         elif (recorder.state != SquelchRecorder.RECORDING
