@@ -19,6 +19,9 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
   const spectrogramRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const spectrogramPluginRef = useRef<SpectrogramPlugin | null>(null);
+  // Keep event listeners current without rebuilding WaveSurfer mid-playback.
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -125,13 +128,13 @@ function AudioPlayer({ src, recordingId, onTimeUpdate, peaks, audioDuration, sho
     wavesurfer.on("audioprocess", () => {
       const time = wavesurfer.getCurrentTime();
       setCurrentTime(time);
-      onTimeUpdate?.(time);
+      onTimeUpdateRef.current?.(time);
     });
 
     wavesurfer.on("seeking", () => {
       const time = wavesurfer.getCurrentTime();
       setCurrentTime(time);
-      onTimeUpdate?.(time);
+      onTimeUpdateRef.current?.(time);
     });
 
     wavesurfer.on("play", () => setIsPlaying(true));

@@ -404,7 +404,7 @@ function BrowsePage() {
   };
 
 
-  const pageItems = data?.items ?? [];
+  const pageItems = useMemo(() => data?.items ?? [], [data?.items]);
   const pageIds = pageItems.map((r) => r.id);
   const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
   const filteredTotal = data?.total ?? 0;

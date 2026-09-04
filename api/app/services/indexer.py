@@ -46,6 +46,19 @@ _PARTITION_MODES = [
     "voice", "cw", "aprs", "pager", "hfdl", "acars", "vdl2", "eas", "sstv",
 ]
 
+
+def _ensure_partitioned_recordings_indexes(conn) -> None:
+    """Create indexes that pre-date partitioning on either a fresh or old partitioned table."""
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_recordings_freq_ts ON recordings (frequency_hz, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_recordings_repeater_id ON recordings (repeater_id)",
+        "CREATE INDEX IF NOT EXISTS ix_recordings_freq_label ON recordings (frequency_label)",
+        "CREATE INDEX IF NOT EXISTS ix_recordings_source_sdr ON recordings (source_sdr)",
+        "CREATE INDEX IF NOT EXISTS ix_recordings_ai_tags ON recordings USING GIN (ai_tags)",
+    ):
+        conn.execute(text(statement))
+
+
 def _maybe_partition_recordings():
     """Convert recordings table from regular to LIST-partitioned by mode.
 
@@ -64,7 +77,9 @@ def _maybe_partition_recordings():
             print("[Partition] recordings table does not exist yet, skipping")
             return
         if row[0] == 'p':
-            print("[Partition] recordings already partitioned, skipping")
+            _ensure_partitioned_recordings_indexes(conn)
+            conn.commit()
+            print("[Partition] recordings already partitioned; indexes verified")
             return
 
         print("[Partition] Converting recordings to LIST partitioning by mode...")
@@ -92,7 +107,7 @@ def _maybe_partition_recordings():
                 audio_path      VARCHAR(512),
                 text_path       VARCHAR(512),
                 transcript      TEXT,
-                ai_tags         TEXT,
+                ai_tags         JSONB,
                 repeater_id     INTEGER,
                 frequency_label VARCHAR(255),
                 waveform_cached VARCHAR(512),
@@ -100,6 +115,7 @@ def _maybe_partition_recordings():
                 notes           TEXT,
                 dtmf_tones      VARCHAR(255),
                 signal_db       DOUBLE PRECISION,
+                source_sdr      VARCHAR(30),
                 created_at      TIMESTAMP DEFAULT NOW(),
                 updated_at      TIMESTAMP DEFAULT NOW(),
                 search_vector   TSVECTOR,
@@ -138,6 +154,7 @@ def _maybe_partition_recordings():
             "CREATE UNIQUE INDEX uq_recordings_filename_mode "
             "ON recordings (filename, mode)"
         ))
+        _ensure_partitioned_recordings_indexes(conn)
 
         # 5. Copy data — COALESCE(mode, 'voice') handles any NULLs
         conn.execute(text("""
@@ -145,12 +162,12 @@ def _maybe_partition_recordings():
                 (id, filename, mode, frequency_hz, timestamp, duration_seconds,
                  audio_path, text_path, transcript, ai_tags, repeater_id,
                  frequency_label, waveform_cached, spectrogram_cached, notes,
-                 dtmf_tones, signal_db, created_at, updated_at, search_vector)
+                 dtmf_tones, signal_db, source_sdr, created_at, updated_at, search_vector)
             SELECT
                 id, filename, COALESCE(mode, 'voice'), frequency_hz, timestamp,
                 duration_seconds, audio_path, text_path, transcript, ai_tags,
                 repeater_id, frequency_label, waveform_cached, spectrogram_cached,
-                notes, dtmf_tones, signal_db, created_at, updated_at, search_vector
+                notes, dtmf_tones, signal_db, source_sdr, created_at, updated_at, search_vector
             FROM recordings_unpartitioned
         """))
 
@@ -353,7 +370,7 @@ def detect_dtmf_tones(audio_path: str) -> str | None:
 
 
 def ensure_recordings_schema(db):
-    db.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS ai_tags TEXT"))
+    db.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS ai_tags JSONB"))
     db.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS repeater_id INTEGER"))
     db.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS frequency_label TEXT"))
     db.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS notes TEXT"))

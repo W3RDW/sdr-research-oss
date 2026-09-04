@@ -23,3 +23,5 @@ def test_openapi_renders():
     spec = resp.json()
     assert "paths" in spec
     assert len(spec["paths"]) > 10  # we have many routes
+    # The UI uses this SSE route for dashboard updates and browser notifications.
+    assert "/api/v1/events/stream" in spec["paths"]

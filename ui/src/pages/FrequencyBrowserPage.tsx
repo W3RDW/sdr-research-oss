@@ -1,4 +1,4 @@
-import { useState, useMemo, lazy, Suspense } from "react";
+import { useState, useMemo, useCallback, lazy, Suspense } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -133,7 +133,7 @@ function FrequencyBrowserPage() {
   }, [activityQuery.data]);
 
   // Find activity for a frequency (with ~6kHz tolerance like repeater matching)
-  function getActivity(hz: number): number {
+  const getActivity = useCallback((hz: number): number => {
     let count = 0;
     for (const [freq, c] of activityMap) {
       if (Math.abs(freq - hz) <= 6000) {
@@ -141,7 +141,7 @@ function FrequencyBrowserPage() {
       }
     }
     return count;
-  }
+  }, [activityMap]);
 
   // Merge data sources into unified list
   const allFrequencies = useMemo<UnifiedFrequency[]>(() => {
@@ -232,7 +232,7 @@ function FrequencyBrowserPage() {
     }
 
     return items;
-  }, [allFrequencies, bandFilter, modeFilter, searchText, activeOnly, activityMap]);
+  }, [allFrequencies, bandFilter, modeFilter, searchText, activeOnly, getActivity]);
 
   // Create frequency label mutation
   const createMutation = useMutation({

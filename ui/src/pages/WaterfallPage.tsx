@@ -583,7 +583,7 @@ function WaterfallPage() {
     staleTime: 15_000,
   });
 
-  const recordings = browseData?.items ?? [];
+  const recordings = useMemo(() => browseData?.items ?? [], [browseData?.items]);
 
   // Build the grid
   const grid = useMemo(

@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from .database import engine, Base
-from .routers import admin, aprs, files, repeaters, search, stats, waveform
+from .routers import admin, aprs, events, files, repeaters, search, stats, waveform
 from .services.indexer import run_indexer
 from .services.repeater import run_repeater_sync
 
@@ -121,6 +121,7 @@ app.include_router(search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(waveform.router, prefix="/api/v1/waveform", tags=["waveform"])
 app.include_router(repeaters.router, prefix="/api/v1/repeaters", tags=["repeaters"])
 app.include_router(aprs.router, prefix="/api/v1/aprs", tags=["aprs"])
+app.include_router(events.router, prefix="/api/v1/events", tags=["events"])
 app.include_router(stats.router, prefix="/api/v1/stats", tags=["stats"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 

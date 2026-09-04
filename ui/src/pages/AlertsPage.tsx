@@ -193,7 +193,7 @@ function AlertsPage() {
 
   // ── Computed data ──────────────────────────────────────────────────
 
-  const alerts = alertData?.items ?? [];
+  const alerts = useMemo(() => alertData?.items ?? [], [alertData?.items]);
 
   // Summary stats
   const stats = useMemo(() => {

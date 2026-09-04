@@ -232,7 +232,7 @@ export default function WeatherPage() {
       ? `${radarHost}${currentFrame.path}/256/{z}/{x}/{y}/8/1_1.png`
       : null;
 
-  const alerts = alertsResp?.alerts ?? [];
+  const alerts = useMemo(() => alertsResp?.alerts ?? [], [alertsResp?.alerts]);
   const metars = metarsResp?.metars ?? [];
   const forecastPeriods = forecastResp?.periods ?? [];
   const reports = reportsResp?.reports ?? [];
