@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
     fastapi uvicorn[standard] \
-    sqlalchemy psycopg2-binary alembic \
+    "sqlalchemy>=2.0,<2.1" psycopg2-binary alembic \
     python-multipart aiofiles \
     librosa numpy scipy matplotlib \
     pydantic pydantic-settings \
