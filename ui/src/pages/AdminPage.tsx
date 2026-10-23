@@ -202,8 +202,11 @@ function AdminPage() {
         refetch();
         queryClient.invalidateQueries({ queryKey: ["stats"] });
       }, 5000);
-    } catch {
-      setSyncMsg("Sync request failed.");
+    } catch (err) {
+      // 409 = refused by the RepeaterBook access gate (denial block / 429 backoff)
+      const detail = (err as { response?: { data?: { detail?: { reason?: string; status?: string } } } })
+        .response?.data?.detail;
+      setSyncMsg(detail ? `Sync refused: ${detail.reason ?? detail.status}` : "Sync request failed.");
     } finally {
       setBusy(null);
     }

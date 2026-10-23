@@ -21,7 +21,7 @@ from ..database import get_db
 from ..models import AlertHistory, FrequencyLabel, Recording, Repeater
 from ..services.alerting import _send_webhook
 from ..services.indexer import maybe_set_ai_tags, maybe_set_frequency_metadata
-from ..services.repeater import sync_repeaters
+from ..services.repeater import clear_repeaterbook_block, repeaterbook_status, sync_repeaters
 from ..services.satellites import fetch_satellite_tles as _fetch_sat_tles, station_coords as _station_coords
 from ..services.transcription import queue_retranscription
 
@@ -120,9 +120,34 @@ async def backfill_ai_tags(
 
 
 @router.post("/sync-repeaters")
-async def trigger_repeater_sync():
-    asyncio.create_task(asyncio.to_thread(sync_repeaters))
+async def trigger_repeater_sync(user: str = Depends(_require_auth)):
+    """Manual sync. Refused (409) while a denial block or 429 backoff is active."""
+    status = await asyncio.to_thread(repeaterbook_status)
+    if not status["enabled"]:
+        raise HTTPException(409, detail={"status": "disabled"})
+    if status["manual_sync_blocked_reason"]:
+        raise HTTPException(409, detail={"status": "refused", "reason": status["manual_sync_blocked_reason"]})
+    # sync_repeaters re-checks the persisted gate under its lock.
+    asyncio.create_task(asyncio.to_thread(sync_repeaters, "manual"))
     return {"status": "sync started"}
+
+
+@router.get("/repeaterbook/status")
+async def get_repeaterbook_status():
+    return await asyncio.to_thread(repeaterbook_status)
+
+
+class ClearRepeaterBookBlock(BaseModel):
+    # Must be the literal string below: a deliberate acknowledgement that the
+    # denial cause was corrected and RepeaterBook has confirmed access.
+    confirm: str
+
+
+@router.post("/repeaterbook/clear-block")
+async def clear_repeaterbook_block_endpoint(body: ClearRepeaterBookBlock, user: str = Depends(_require_auth)):
+    if body.confirm != "cause corrected and access confirmed by RepeaterBook":
+        raise HTTPException(400, detail="confirm must be 'cause corrected and access confirmed by RepeaterBook'")
+    return await asyncio.to_thread(clear_repeaterbook_block, user or "admin")
 
 
 _status_cache: dict = {"ts": 0.0, "data": None}

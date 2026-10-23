@@ -35,8 +35,9 @@ The User-Agent **must match** what RepeaterBook approved. Wrong UA → 401.
 
 ## 3. Restart the API
 
-The API runs `sync_repeaters()` on startup, then every `REPEATERBOOK_SYNC_HOURS`.
-Watch the logs:
+The API syncs on startup if one is due, then every `REPEATERBOOK_SYNC_HOURS`
+(measured from the last *attempt*, which is persisted, so restarts do not
+trigger extra syncs). Watch the logs:
 
 ```
 [RepeaterBook] Syncing repeaters…
@@ -46,8 +47,34 @@ Watch the logs:
 [RepeaterBook] Upserted 2348 repeaters.
 ```
 
-If you see `HTTP 401 for OH: {"error_code":"auth_missing"}`, your token or
-UA is wrong. Double-check the approval email.
+If you see `ACCESS DENIED (HTTP 401 auth_missing ...)`, your token or UA is
+wrong. Double-check the approval email — see "Access denials" below.
+
+## Access denials, rate limits and errors
+
+The client fails closed. State lives in the `repeaterbook_sync_state` table,
+so it survives restarts and applies to startup, scheduled and manual syncs.
+
+| Response | Behavior |
+|---|---|
+| HTTP 401 / 403, or a body with `"ok": false` (e.g. `ua_banned`, auth, scope) | Whole batch stops immediately. **All** further syncs are blocked until an operator clears the block. |
+| HTTP 429 (or 503 with `Retry-After`) | Batch stops. No request before `Retry-After`; without it, backoff starts at 1 h and doubles per consecutive 429 (max 7 days, never shorter than `Retry-After`). |
+| Any other HTTP / network / parse error | Batch stops; retried at the next scheduled interval. |
+
+Check state: `GET /api/v1/admin/repeaterbook/status`. While blocked or backing
+off, `POST /api/v1/admin/sync-repeaters` returns `409`.
+
+To clear a denial block — **only after the cause is fixed and RepeaterBook
+has confirmed access** (never by changing the User-Agent, token or source to
+get around a ban):
+
+```bash
+curl -X POST http://<api>/api/v1/admin/repeaterbook/clear-block \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": "cause corrected and access confirmed by RepeaterBook"}'
+```
+
+You can also set `REPEATERBOOK_ENABLED=false` to stop all RepeaterBook traffic.
 
 ## How matching works
 

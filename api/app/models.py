@@ -45,6 +45,30 @@ class Repeater(Base):
     )
 
 
+class RepeaterBookSyncState(Base):
+    """Single-row (id=1) persistent sync state for the RepeaterBook client.
+
+    Lives in the database so a block or backoff survives API restarts and
+    applies to every trigger (startup, scheduled, manual).
+    """
+    __tablename__ = "repeaterbook_sync_state"
+
+    id = Column(Integer, primary_key=True)
+    # Sticky stop after an auth / authorization / scope / User-Agent denial.
+    # Only cleared by an explicit operator action (clear_repeaterbook_block).
+    blocked = Column(Boolean, nullable=False, default=False)
+    blocked_at = Column(DateTime, nullable=True)
+    block_http_status = Column(Integer, nullable=True)
+    block_error_code = Column(String(100), nullable=True)
+    block_detail = Column(Text, nullable=True)
+    # HTTP 429 backoff: no request of any kind before backoff_until.
+    backoff_until = Column(DateTime, nullable=True)
+    consecutive_rate_limits = Column(Integer, nullable=False, default=0)
+    last_attempt_at = Column(DateTime, nullable=True)   # written BEFORE any request
+    last_success_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+
+
 class Recording(Base):
     __tablename__ = "recordings"
 
