@@ -19,12 +19,11 @@ from datetime import datetime, timedelta
 from urllib import error
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.database import Base
 from app.models import Repeater, RepeaterBookSyncState
 from app.services import repeater
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 T0 = datetime(2026, 10, 23, 3, 0, 0)
 STATES = "OH,IN,KY"
@@ -54,7 +53,7 @@ def http_error(code, body=None, headers=None):
     return error.HTTPError("https://example.invalid", code, "err", headers or {}, io.BytesIO(payload))
 
 
-UA_BANNED = lambda: http_error(  # noqa: E731
+UA_BANNED = lambda: http_error(
     403, {"ok": False, "error_code": "ua_banned", "message": "This User-Agent has been blocked due to abuse."}
 )
 
@@ -273,8 +272,8 @@ def test_unreadable_state_fails_closed(env, monkeypatch):
 
 
 def test_manual_endpoint_refuses_while_blocked(env):
-    from fastapi.testclient import TestClient
     from app.main import app
+    from fastapi.testclient import TestClient
 
     env.net.queue(UA_BANNED())
     repeater.sync_repeaters("startup")
