@@ -26,7 +26,7 @@ def _ensure_cache_dir(subdir: str) -> Path:
 
 
 @router.get("/{file_id}")
-async def get_waveform(file_id: int, response: Response, db: Session = Depends(get_db)):
+def get_waveform(file_id: int, response: Response, db: Session = Depends(get_db)):
     """Get waveform peaks data for visualization."""
     response.headers["Cache-Control"] = "public, max-age=86400, immutable"
     recording = db.query(Recording).filter(Recording.id == file_id).first()
@@ -82,7 +82,7 @@ async def get_waveform(file_id: int, response: Response, db: Session = Depends(g
 
 
 @router.get("/{file_id}/spectrogram")
-async def get_spectrogram(file_id: int, response: Response, db: Session = Depends(get_db)):
+def get_spectrogram(file_id: int, response: Response, db: Session = Depends(get_db)):
     """Get spectrogram image."""
     response.headers["Cache-Control"] = "public, max-age=86400, immutable"
     recording = db.query(Recording).filter(Recording.id == file_id).first()

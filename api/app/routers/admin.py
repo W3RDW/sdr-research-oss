@@ -62,7 +62,7 @@ async def _require_auth(x_authentik_username: str | None = Header(None, alias="X
 
 
 @router.post("/backfill-frequency")
-async def backfill_frequency(
+def backfill_frequency(
     limit: int = 500,
     db: Session = Depends(get_db),
 ):
@@ -87,7 +87,7 @@ async def backfill_frequency(
 
 
 @router.post("/backfill-ai-tags")
-async def backfill_ai_tags(
+def backfill_ai_tags(
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
@@ -223,7 +223,7 @@ def get_status(db: Session = Depends(get_db)):
 
 
 @router.get("/alerts")
-async def list_alerts(
+def list_alerts(
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
@@ -252,7 +252,7 @@ async def list_alerts(
 
 
 @router.post("/alerts/{alert_id}/resend")
-async def resend_alert(alert_id: int, db: Session = Depends(get_db)):
+def resend_alert(alert_id: int, db: Session = Depends(get_db)):
     """Re-fire the webhook for a specific alert history entry."""
     ah = db.query(AlertHistory).filter(AlertHistory.id == alert_id).first()
     if not ah:
@@ -343,7 +343,7 @@ def get_storage():
 
 
 @router.post("/retention")
-async def run_retention(
+def run_retention(
     days: int = 0,
     dry_run: bool = False,
     mode: str | None = None,
@@ -384,7 +384,7 @@ class FrequencyLabelCreate(BaseModel):
 
 
 @router.get("/frequency-labels")
-async def list_frequency_labels(db: Session = Depends(get_db)):
+def list_frequency_labels(db: Session = Depends(get_db)):
     rows = db.query(FrequencyLabel).order_by(FrequencyLabel.frequency_hz).all()
     return {
         "items": [
@@ -403,7 +403,7 @@ async def list_frequency_labels(db: Session = Depends(get_db)):
 
 
 @router.post("/frequency-labels", status_code=201)
-async def create_frequency_label(
+def create_frequency_label(
     body: FrequencyLabelCreate,
     db: Session = Depends(get_db),
 ):
@@ -431,7 +431,7 @@ async def create_frequency_label(
 
 
 @router.delete("/frequency-labels/{label_id}")
-async def delete_frequency_label(label_id: int, db: Session = Depends(get_db), user: str = Depends(_require_auth)):
+def delete_frequency_label(label_id: int, db: Session = Depends(get_db), user: str = Depends(_require_auth)):
     fl = db.query(FrequencyLabel).filter(FrequencyLabel.id == label_id).first()
     if not fl:
         raise HTTPException(status_code=404, detail="Frequency label not found")
@@ -686,7 +686,7 @@ def get_sdr_health_band_legacy(band: str):
 
 
 @router.get("/radio-status")
-async def get_radio_status(db: Session = Depends(get_db)):
+def get_radio_status(db: Session = Depends(get_db)):
     """Per-radio freshness for the watchdog.
 
     Returns one row per known data source with the seconds since the last
@@ -741,7 +741,7 @@ async def get_radio_status(db: Session = Depends(get_db)):
 
 
 @router.post("/bulk-retranscribe")
-async def bulk_retranscribe(
+def bulk_retranscribe(
     clear_no_speech_only: bool = True,
     db: Session = Depends(get_db),
     user: str = Depends(_require_auth),
@@ -807,7 +807,7 @@ class AlertRuleCreate(BaseModel):
 
 
 @router.get("/alert-rules")
-async def list_alert_rules(db: Session = Depends(get_db)):
+def list_alert_rules(db: Session = Depends(get_db)):
     _ensure_alert_rules(db)
     rows = db.execute(_sql_text(
         "SELECT id, rule_type, value, enabled, notes, created_at"
@@ -817,7 +817,7 @@ async def list_alert_rules(db: Session = Depends(get_db)):
 
 
 @router.post("/alert-rules", status_code=201)
-async def create_alert_rule(body: AlertRuleCreate, db: Session = Depends(get_db)):
+def create_alert_rule(body: AlertRuleCreate, db: Session = Depends(get_db)):
     if body.rule_type not in ("keyword", "callsign"):
         raise HTTPException(status_code=422, detail="rule_type must be 'keyword' or 'callsign'")
     if not body.value.strip():
@@ -838,7 +838,7 @@ async def create_alert_rule(body: AlertRuleCreate, db: Session = Depends(get_db)
 
 
 @router.patch("/alert-rules/{rule_id}")
-async def toggle_alert_rule(rule_id: int, enabled: bool, db: Session = Depends(get_db)):
+def toggle_alert_rule(rule_id: int, enabled: bool, db: Session = Depends(get_db)):
     _ensure_alert_rules(db)
     res = db.execute(
         _sql_text("UPDATE alert_rules SET enabled = :e WHERE id = :id RETURNING id"),
@@ -851,7 +851,7 @@ async def toggle_alert_rule(rule_id: int, enabled: bool, db: Session = Depends(g
 
 
 @router.delete("/alert-rules/{rule_id}")
-async def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
+def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
     _ensure_alert_rules(db)
     res = db.execute(
         _sql_text("DELETE FROM alert_rules WHERE id = :id RETURNING id"),
@@ -864,7 +864,7 @@ async def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/test-webhook")
-async def test_webhook():
+def test_webhook():
     """Send a test payload to the configured alert webhook URL."""
     if not settings.alert_webhook_url:
         raise HTTPException(status_code=400, detail="ALERT_WEBHOOK_URL is not configured")
@@ -883,7 +883,7 @@ async def test_webhook():
 
 
 @router.get("/alert-dryrun")
-async def alert_dryrun(limit: int = 500, db: Session = Depends(get_db)):
+def alert_dryrun(limit: int = 500, db: Session = Depends(get_db)):
     """Check recent recordings against active alert rules without sending webhooks."""
     import re as _re
     from ..services.alerting import _get_rules
@@ -927,7 +927,7 @@ _last_digest_sent: datetime | None = None
 
 
 @router.get("/digest-status")
-async def get_digest_status():
+def get_digest_status():
     """Return the timestamp of the last sent daily digest."""
     return {
         "last_sent": _last_digest_sent.isoformat() if _last_digest_sent else None,
@@ -935,7 +935,7 @@ async def get_digest_status():
 
 
 @router.post("/send-digest")
-async def send_digest_now(db: Session = Depends(get_db)):
+def send_digest_now(db: Session = Depends(get_db)):
     """Manually trigger a daily digest webhook."""
     global _last_digest_sent
     from ..services.indexer import _send_daily_digest
@@ -1131,7 +1131,7 @@ async def get_propagation():
 # ---------------------------------------------------------------------------
 
 @router.get("/satellite-passes")
-async def get_satellite_passes(hours: int = 24, min_elevation: float = 10.0):
+def get_satellite_passes(hours: int = 24, min_elevation: float = 10.0):
     """Return TLE data and frequencies for ham satellites.
     Pass prediction is computed client-side using satellite.js.
     """
@@ -1153,7 +1153,7 @@ async def get_satellite_passes(hours: int = 24, min_elevation: float = 10.0):
 # ---------------------------------------------------------------------------
 
 @router.get("/spectrum")
-async def get_spectrum(capture_id: str | None = None):
+def get_spectrum(capture_id: str | None = None):
     """Return latest FFT detection data from unified-sdr.
 
     Reads all detections_*.json files from the detections directory.

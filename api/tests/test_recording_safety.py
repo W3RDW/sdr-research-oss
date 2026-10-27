@@ -1,4 +1,3 @@
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -29,12 +28,10 @@ def test_streaming_text_only_recording_returns_not_found():
     from app.routers.files import stream_file
 
     with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            stream_file(
-                1,
-                request=None,
-                db=_Database(SimpleNamespace(audio_path=None)),
-            )
+        stream_file(
+            1,
+            request=None,
+            db=_Database(SimpleNamespace(audio_path=None)),
         )
 
     assert error.value.status_code == 404

@@ -339,7 +339,7 @@ def export_aprs(
 
 
 @router.get("/voice-callsigns")
-async def voice_callsigns(
+def voice_callsigns(
     hours: int = Query(72, ge=1, le=720),
     db: Session = Depends(get_db),
 ):
@@ -389,7 +389,7 @@ async def voice_callsigns(
 
 
 @router.get("/satellites/tle/{norad_id}")
-async def get_satellite_tle(norad_id: int):
+def get_satellite_tle(norad_id: int):
     """
     Proxy Celestrak TLE for a given NORAD ID.
     Caches results for 1 hour to avoid hammering Celestrak.
@@ -420,7 +420,7 @@ async def get_satellite_tle(norad_id: int):
 
 
 @router.get("/aircraft")
-async def get_aircraft(
+def get_aircraft(
     min_altitude: Optional[int] = None,
     max_altitude: Optional[int] = None,
     max_seen_sec: Optional[int] = None,
@@ -464,7 +464,7 @@ async def get_aircraft(
 
 
 @router.get("/ais/vessels")
-async def get_ais_vessels():
+def get_ais_vessels():
     """Proxy live vessel list from ais-catcher HTTP server."""
     import urllib.request as _ureq
     import urllib.error as _uerr

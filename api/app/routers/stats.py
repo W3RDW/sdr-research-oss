@@ -243,7 +243,7 @@ def _compute_stats(db: Session):
 
 
 @router.get("/frequency/{frequency_hz}")
-async def get_frequency_stats(
+def get_frequency_stats(
     frequency_hz: float,
     response: Response,
     tolerance_hz: float = Query(default=10000.0, ge=100.0, le=500000.0),
@@ -401,7 +401,7 @@ async def get_frequency_stats(
 
 
 @router.get("/activity")
-async def get_activity(response: Response, days: int = 30, db: Session = Depends(get_db)):
+def get_activity(response: Response, days: int = 30, db: Session = Depends(get_db)):
     """
     Frequency × hour-of-day activity heatmap.
     Returns a grid: for each frequency label, the count per hour (0-23).
@@ -470,7 +470,7 @@ _BAND_ORDER = {
 
 
 @router.get("/bands/activity")
-async def band_activity(response: Response, hours: int = 1, db: Session = Depends(get_db)):
+def band_activity(response: Response, hours: int = 1, db: Session = Depends(get_db)):
     """Real-time band conditions based on FT8/WSPR spot activity."""
     response.headers["Cache-Control"] = "public, max-age=30"
     from datetime import datetime, timedelta

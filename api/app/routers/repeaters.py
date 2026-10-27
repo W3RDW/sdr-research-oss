@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/station")
-async def get_station_center():
+def get_station_center():
     """Return the configured station coordinates (used as map center)."""
     from ..config import settings
     return {
@@ -21,7 +21,7 @@ async def get_station_center():
 
 
 @router.get("")
-async def list_repeaters(
+def list_repeaters(
     response: Response,
     state: Optional[str] = Query(None, min_length=2, max_length=50),
     callsign: Optional[str] = Query(None, min_length=1, max_length=20),

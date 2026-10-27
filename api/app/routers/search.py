@@ -36,7 +36,7 @@ def _frequency_group_fields(
 
 
 @router.get("/text")
-async def search_text(
+def search_text(
     q: str = Query(..., min_length=1),
     mode: Optional[str] = Query(None, pattern="^(cw|voice|aprs)$"),
     frequency_min: Optional[float] = None,
@@ -210,7 +210,7 @@ def search_callsign(
 
 
 @router.get("/similar/{recording_id}")
-async def search_similar(
+def search_similar(
     recording_id: int,
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),

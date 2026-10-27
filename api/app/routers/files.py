@@ -185,7 +185,7 @@ def _apply_tag_filter(query, tag: Optional[str]):
 
 
 @router.get("/browse")
-async def browse_files(
+def browse_files(
     mode: Optional[str] = Query(None, pattern="^(cw|voice|aprs|pager|eas|acars|vdl2|hfdl|sstv)$"),
     frequency_min: Optional[float] = None,
     frequency_max: Optional[float] = None,
@@ -267,7 +267,7 @@ async def browse_files(
 
 
 @router.get("/callsign/{callsign}")
-async def get_callsign_info(callsign: str, db: Session = Depends(get_db)):
+def get_callsign_info(callsign: str, db: Session = Depends(get_db)):
     """Return operator info and recording statistics for a callsign."""
     cs = callsign.strip().upper()
     # Strip SSID (e.g. W1AW-8 → W1AW) for operator DB lookup
@@ -324,7 +324,7 @@ async def get_callsign_info(callsign: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{file_id}")
-async def get_file(file_id: int, db: Session = Depends(get_db)):
+def get_file(file_id: int, db: Session = Depends(get_db)):
     """Get file metadata and transcript."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -390,7 +390,7 @@ async def get_file(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{file_id}/neighbors")
-async def get_file_neighbors(file_id: int, db: Session = Depends(get_db)):
+def get_file_neighbors(file_id: int, db: Session = Depends(get_db)):
     """Get previous and next recording IDs by timestamp."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -429,7 +429,7 @@ async def get_file_neighbors(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{file_id}/related")
-async def get_related_recordings(file_id: int, db: Session = Depends(get_db)):
+def get_related_recordings(file_id: int, db: Session = Depends(get_db)):
     """Get nearby recordings on the same frequency (±10 kHz, ±1 hour)."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -473,7 +473,7 @@ async def get_related_recordings(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{file_id}")
-async def update_recording(
+def update_recording(
     file_id: int, body: UpdateRecordingRequest, db: Session = Depends(get_db)
 ):
     """Update mutable fields on a recording (ai_tags and/or transcript)."""
@@ -510,7 +510,7 @@ async def update_recording(
 
 
 @router.patch("/{file_id}/mode")
-async def reclassify_recording_mode(
+def reclassify_recording_mode(
     file_id: int, body: ModeChangeRequest, db: Session = Depends(get_db)
 ):
     """Reclassify a voice recording as CW or vice versa.
@@ -588,7 +588,7 @@ async def reclassify_recording_mode(
 
 
 @router.post("/{file_id}/retag")
-async def retag_recording(file_id: int, db: Session = Depends(get_db)):
+def retag_recording(file_id: int, db: Session = Depends(get_db)):
     """Clear AI tags so the indexer re-runs tagging on the next cycle."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -599,7 +599,7 @@ async def retag_recording(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{file_id}/retranscribe")
-async def retranscribe_recording(file_id: int, db: Session = Depends(get_db)):
+def retranscribe_recording(file_id: int, db: Session = Depends(get_db)):
     """Clear transcript and delete text file so Whisper re-transcribes on next cycle."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -626,7 +626,7 @@ async def retranscribe_recording(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{file_id}/stream")
-async def stream_file(file_id: int, request: Request, db: Session = Depends(get_db)):
+def stream_file(file_id: int, request: Request, db: Session = Depends(get_db)):
     """Stream audio file with Range request support."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -689,7 +689,7 @@ async def stream_file(file_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.get("/{file_id}/image")
-async def serve_image(file_id: int, db: Session = Depends(get_db)):
+def serve_image(file_id: int, db: Session = Depends(get_db)):
     """Serve an image file (for mode=sstv SSTV captures; audio_path holds image path)."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -720,7 +720,7 @@ def _delete_recording_files(recording: Recording):
 
 
 @router.delete("/{file_id}")
-async def delete_file(file_id: int, db: Session = Depends(get_db)):
+def delete_file(file_id: int, db: Session = Depends(get_db)):
     """Delete a single recording and its files."""
     recording = db.query(Recording).filter(Recording.id == file_id).first()
     if not recording:
@@ -733,7 +733,7 @@ async def delete_file(file_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/bulk-delete")
-async def bulk_delete_files(body: BulkDeleteRequest, db: Session = Depends(get_db)):
+def bulk_delete_files(body: BulkDeleteRequest, db: Session = Depends(get_db)):
     """Delete multiple recordings by ID."""
     recordings = db.query(Recording).filter(Recording.id.in_(body.ids)).all()
     count = 0
@@ -746,7 +746,7 @@ async def bulk_delete_files(body: BulkDeleteRequest, db: Session = Depends(get_d
 
 
 @router.post("/bulk-delete-filtered")
-async def bulk_delete_filtered_files(
+def bulk_delete_filtered_files(
     body: BulkDeleteFilteredRequest,
     db: Session = Depends(get_db),
 ):
@@ -804,7 +804,7 @@ async def bulk_delete_filtered_files(
 
 
 @router.get("/tags/list")
-async def list_tags(limit: int = 200, db: Session = Depends(get_db)):
+def list_tags(limit: int = 200, db: Session = Depends(get_db)):
     """Return all distinct AI tags sorted by usage count for autocomplete."""
     rows = (
         db.query(Recording.ai_tags)
@@ -824,7 +824,7 @@ class UpdateNotesRequest(BaseModel):
 
 
 @router.patch("/{recording_id}/notes")
-async def update_notes(
+def update_notes(
     recording_id: int,
     body: UpdateNotesRequest,
     db: Session = Depends(get_db),
@@ -839,7 +839,7 @@ async def update_notes(
 
 
 @router.get("/export-zip")
-async def export_zip(
+def export_zip(
     mode: Optional[str] = None,
     frequency_min: Optional[float] = None,
     frequency_max: Optional[float] = None,
@@ -917,14 +917,14 @@ def _bm_row(bm) -> dict:
 
 
 @router.get("/bookmarks")
-async def list_bookmarks(db: Session = Depends(get_db)):
+def list_bookmarks(db: Session = Depends(get_db)):
     from ..models import FrequencyBookmark
     rows = db.query(FrequencyBookmark).order_by(FrequencyBookmark.frequency_hz).all()
     return {"items": [_bm_row(r) for r in rows]}
 
 
 @router.post("/bookmarks", status_code=201)
-async def create_bookmark(body: BookmarkCreate, db: Session = Depends(get_db)):
+def create_bookmark(body: BookmarkCreate, db: Session = Depends(get_db)):
     from ..models import FrequencyBookmark
     if not body.label.strip():
         raise HTTPException(status_code=422, detail="label cannot be empty")
@@ -942,7 +942,7 @@ async def create_bookmark(body: BookmarkCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/bookmarks/{bookmark_id}")
-async def update_bookmark(
+def update_bookmark(
     bookmark_id: int, body: BookmarkUpdate, db: Session = Depends(get_db)
 ):
     from ..models import FrequencyBookmark
@@ -962,7 +962,7 @@ async def update_bookmark(
 
 
 @router.delete("/bookmarks/{bookmark_id}")
-async def delete_bookmark(bookmark_id: int, db: Session = Depends(get_db)):
+def delete_bookmark(bookmark_id: int, db: Session = Depends(get_db)):
     from ..models import FrequencyBookmark
     bm = db.query(FrequencyBookmark).filter(FrequencyBookmark.id == bookmark_id).first()
     if not bm:
