@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -55,11 +56,21 @@ class RepeaterBookError(Exception):
 
 def _utcnow() -> datetime:
     return datetime.utcnow()
-REPEATERBOOK_URL = (
-    "https://www.repeaterbook.com/api/export.php"
-    "?country=US&state={state}&lat={lat}&lng={lng}"
-    "&distance={radius}&Dunit=m&status_id=1&use=OPEN&format=json"
-)
+# export.php has no proximity search; it filters by FIPS state_id only.
+# The configured radius is applied locally in _within_radius().
+REPEATERBOOK_URL = "https://www.repeaterbook.com/api/export.php?state_id={state_id}"
+
+STATE_FIPS = {
+    "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08",
+    "CT": "09", "DE": "10", "DC": "11", "FL": "12", "GA": "13", "HI": "15",
+    "ID": "16", "IL": "17", "IN": "18", "IA": "19", "KS": "20", "KY": "21",
+    "LA": "22", "ME": "23", "MD": "24", "MA": "25", "MI": "26", "MN": "27",
+    "MS": "28", "MO": "29", "MT": "30", "NE": "31", "NV": "32", "NH": "33",
+    "NJ": "34", "NM": "35", "NY": "36", "NC": "37", "ND": "38", "OH": "39",
+    "OK": "40", "OR": "41", "PA": "42", "RI": "44", "SC": "45", "SD": "46",
+    "TN": "47", "TX": "48", "UT": "49", "VT": "50", "VA": "51", "WA": "53",
+    "WV": "54", "WI": "55", "WY": "56", "PR": "72",
+}
 
 
 def _auth_headers() -> dict:
@@ -86,11 +97,33 @@ def _parse_pl(value: str) -> Optional[float]:
         return None
 
 
+def _parse_coord(value) -> Optional[float]:
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        return None
+    return f if f != 0 else None
+
+
+def _within_radius(lat: Optional[float], lon: Optional[float]) -> bool:
+    if lat is None or lon is None:
+        return False
+    lat0, lon0 = settings.repeaterbook_latitude, settings.repeaterbook_longitude
+    p1, p2 = math.radians(lat0), math.radians(lat)
+    dp, dl = p2 - p1, math.radians(lon - lon0)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    miles = 3958.8 * 2 * math.asin(math.sqrt(a))
+    return miles <= settings.repeaterbook_radius_miles
+
+
 def _digital_modes(row: dict) -> Optional[str]:
     modes = []
-    for key in ("DMR", "D-Star", "System Fusion", "P25", "NXDN", "TETRA"):
+    for key, label in (
+        ("DMR", "DMR"), ("D-Star", "D-Star"), ("System Fusion", "System Fusion"),
+        ("APCO P-25", "APCO P-25"), ("NXDN", "NXDN"), ("Tetra", "Tetra"), ("M17", "M17"),
+    ):
         if str(row.get(key, "No")).strip().lower() == "yes":
-            modes.append(key)
+            modes.append(label)
     return ",".join(modes) if modes else None
 
 
@@ -100,10 +133,10 @@ def _linked_nodes(row: dict) -> Optional[str]:
         parts.append(f"EchoLink:{row['EchoLink Node'].strip()}")
     if row.get("IRLP Node", "").strip():
         parts.append(f"IRLP:{row['IRLP Node'].strip()}")
-    if row.get("AllStarLink Node", "").strip():
-        parts.append(f"AllStar:{row['AllStarLink Node'].strip()}")
-    if row.get("WiresX", "").strip():
-        parts.append(f"WiresX:{row['WiresX'].strip()}")
+    if row.get("AllStar Node", "").strip():
+        parts.append(f"AllStar:{row['AllStar Node'].strip()}")
+    if row.get("Wires Node", "").strip():
+        parts.append(f"WiresX:{row['Wires Node'].strip()}")
     return " ".join(parts) if parts else None
 
 
@@ -141,12 +174,10 @@ def _error_body(exc: error.HTTPError) -> tuple[str, Optional[str]]:
 
 def _fetch_state(state: str, headers: dict) -> list[dict]:
     """Fetch one state. Raises on any failure — callers must not continue."""
-    url = REPEATERBOOK_URL.format(
-        state=state,
-        lat=settings.repeaterbook_latitude,
-        lng=settings.repeaterbook_longitude,
-        radius=settings.repeaterbook_radius_miles,
-    )
+    fips = STATE_FIPS.get(state.upper())
+    if fips is None:
+        raise RepeaterBookError(f"Unknown state {state!r} in REPEATERBOOK_STATES")
+    url = REPEATERBOOK_URL.format(state_id=fips)
     req = request.Request(url, headers=headers)
     try:
         with request.urlopen(req, timeout=30) as resp:
@@ -381,11 +412,17 @@ def _upsert(rows: list[dict]) -> None:
             print("[RepeaterBook] No results returned.")
             return
         upserted = 0
+        outside = 0
         now = _utcnow()
         for row in rows:
-            callsign = str(row.get("Call", "")).strip().upper()
+            callsign = str(row.get("Callsign", "")).strip().upper()
             freq_hz = _mhz_to_hz(row.get("Frequency", ""))
             if not callsign or not freq_hz:
+                continue
+            lat = _parse_coord(row.get("Lat"))
+            lon = _parse_coord(row.get("Long"))
+            if not _within_radius(lat, lon):
+                outside += 1
                 continue
             existing = (
                 db.query(Repeater)
@@ -397,18 +434,25 @@ def _upsert(rows: list[dict]) -> None:
                 db.add(existing)
             existing.input_hz = _mhz_to_hz(row.get("Input Freq", ""))
             existing.pl_tone = _parse_pl(row.get("PL", ""))
-            existing.location = str(row.get("Location", "")).strip() or None
+            existing.location = str(row.get("Nearest City", "")).strip() or None
             existing.county = str(row.get("County", "")).strip() or None
-            existing.state = str(row.get("ST", row.get("State", ""))).strip() or None
-            existing.latitude = float(row.get("Latitude", 0)) if row.get("Latitude") else None
-            existing.longitude = float(row.get("Longitude", 0)) if row.get("Longitude") else None
+            existing.state = str(row.get("State", "")).strip() or None
+            existing.latitude = lat
+            existing.longitude = lon
             existing.use = str(row.get("Use", "")).strip() or None
             existing.digital_modes = _digital_modes(row)
             existing.linked_nodes = _linked_nodes(row)
             existing.last_synced = now
             upserted += 1
         db.commit()
-        print(f"[RepeaterBook] Upserted {upserted} repeaters.")
+        print(
+            f"[RepeaterBook] Upserted {upserted} repeaters "
+            f"({outside} outside {settings.repeaterbook_radius_miles} mi)."
+        )
+        if upserted == 0 and outside == 0:
+            # Every row lacked a callsign/frequency: the response schema
+            # doesn't match. Log the keys so it can be fixed without refetching.
+            print(f"[RepeaterBook] No usable rows; first row keys: {sorted(rows[0].keys())}")
     except Exception as exc:
         print(f"[RepeaterBook] Sync error: {exc}")
         db.rollback()

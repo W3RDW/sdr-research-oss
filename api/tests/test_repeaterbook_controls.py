@@ -27,7 +27,11 @@ from sqlalchemy.orm import sessionmaker
 
 T0 = datetime(2026, 10, 23, 3, 0, 0)
 STATES = "OH,IN,KY"
-OK_BODY = {"ok": True, "results": [{"Call": "W8ABC", "Frequency": "146.940", "ST": "OH"}]}
+STATION = (39.49, -84.31)
+OK_BODY = {
+    "ok": True,
+    "results": [{"Callsign": "W8ABC", "Frequency": "146.940", "State": "Ohio", "Lat": "39.50", "Long": "-84.30"}],
+}
 
 
 class FakeNet:
@@ -79,6 +83,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(repeater.settings, "repeaterbook_enabled", True)
     monkeypatch.setattr(repeater.settings, "repeaterbook_states", STATES)
     monkeypatch.setattr(repeater.settings, "repeaterbook_sync_hours", 24)
+    monkeypatch.setattr(repeater.settings, "repeaterbook_latitude", STATION[0])
+    monkeypatch.setattr(repeater.settings, "repeaterbook_longitude", STATION[1])
+    monkeypatch.setattr(repeater.settings, "repeaterbook_radius_miles", 75)
 
     class Env:
         pass
@@ -286,3 +293,57 @@ def test_manual_endpoint_refuses_while_blocked(env):
     resp = client.post("/api/v1/admin/repeaterbook/clear-block", json={"confirm": "yes"})
     assert resp.status_code == 400
     assert len(env.net.requests) == 1
+
+
+# --- request shape and parsing -----------------------------------------------
+
+def test_requests_use_fips_state_id(env):
+    env.net.queue(OK_BODY)
+    assert repeater.sync_repeaters("startup")["status"] == "ok"
+    urls = [r.full_url for r in env.net.requests]
+    assert urls == [
+        "https://www.repeaterbook.com/api/export.php?state_id=39",
+        "https://www.repeaterbook.com/api/export.php?state_id=18",
+        "https://www.repeaterbook.com/api/export.php?state_id=21",
+    ]
+
+
+def test_unknown_state_aborts_before_any_request(env, monkeypatch):
+    monkeypatch.setattr(repeater.settings, "repeaterbook_states", "ZZ,OH")
+    env.net.queue(OK_BODY)
+    assert repeater.sync_repeaters("startup")["status"] == "error"
+    assert env.net.requests == []
+
+
+def test_rows_parsed_and_filtered_by_radius(env):
+    body = {
+        "ok": True,
+        "results": [
+            {
+                "Callsign": "w8abc", "Frequency": "146.940", "Input Freq": "146.340",
+                "PL": "118.8", "Nearest City": "Dayton", "County": "Montgomery",
+                "State": "Ohio", "Lat": "39.7589", "Long": "-84.1916", "Use": "OPEN",
+                "DMR": "Yes", "APCO P-25": "Yes", "EchoLink Node": "12345",
+            },
+            # ~200 mi away: outside the 75 mi radius.
+            {"Callsign": "K8FAR", "Frequency": "147.000", "Lat": "41.4993", "Long": "-81.6944"},
+            # No coordinates: can't be placed or range-checked.
+            {"Callsign": "K8NOLOC", "Frequency": "147.120", "Lat": "", "Long": ""},
+        ],
+    }
+    env.net.queue(body)
+    assert repeater.sync_repeaters("startup")["status"] == "ok"
+    db = repeater.SessionLocal()
+    try:
+        rows = db.query(Repeater).all()
+        assert [r.callsign for r in rows] == ["W8ABC"]
+        r = rows[0]
+        assert r.frequency_hz == pytest.approx(146_940_000)
+        assert r.input_hz == pytest.approx(146_340_000)
+        assert r.pl_tone == pytest.approx(118.8)
+        assert (r.location, r.county, r.state) == ("Dayton", "Montgomery", "Ohio")
+        assert (r.latitude, r.longitude) == (pytest.approx(39.7589), pytest.approx(-84.1916))
+        assert r.digital_modes == "DMR,APCO P-25"
+        assert r.linked_nodes == "EchoLink:12345"
+    finally:
+        db.close()
