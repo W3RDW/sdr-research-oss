@@ -1068,15 +1068,14 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 except Exception:
                     timestamp = None
             duration = get_audio_duration(str(wav_file))
-            # Auto-delete very short voice recordings (<2s) — mostly squelch tails and noise bursts
-            if mode == "voice" and duration is not None and duration < 2.0:
-                _rec_freq_check = metadata.get("frequency_hz") or 0
-                # Keep APRS (very short bursts are valid) and pager
-                if not is_aprs_frequency_hz(_rec_freq_check) and not is_public_safety_frequency_hz(_rec_freq_check):
-                    safe_unlink(str(wav_file))
-                    safe_unlink(text_path)
-                    print(f"Auto-deleted short voice recording ({duration:.1f}s): {filename}")
-                    continue
+            # APRS packets belong to their separate decoder; voice bursts
+            # of two seconds or less are squelch artifacts, including on
+            # public-safety frequencies.
+            if should_auto_delete_short_voice(mode, duration, metadata.get("frequency_hz")):
+                safe_unlink(str(wav_file))
+                safe_unlink(text_path)
+                print(f"Auto-deleted short voice recording ({duration:.1f}s): {filename}")
+                continue
             transcript = read_transcript(text_path)
             if should_auto_delete_no_speech(transcript):
                 safe_unlink(str(wav_file))
@@ -2195,8 +2194,14 @@ def _backfill_ai_tags(batch_size: int = 1000, ollama_budget: dict | None = None,
     finally:
         db.close()
 
+def should_auto_delete_short_voice(mode, duration, frequency_hz):
+    return (mode == "voice" and duration is not None and 0 <= duration <= 2.0
+            and not is_aprs_frequency_hz(frequency_hz or 0))
+
+
 def _cleanup_short_recordings():
-    """Delete voice recordings <2s that are already in the DB (one-time cleanup)."""
+    """Bounded recurring cleanup of voice squelch bursts, including public safety."""
+    from sqlalchemy import func as _func
     db = SessionLocal()
     try:
         short = (
@@ -2204,7 +2209,10 @@ def _cleanup_short_recordings():
             .filter(
                 Recording.mode == "voice",
                 Recording.duration_seconds.isnot(None),
-                Recording.duration_seconds < 2.0,
+                Recording.duration_seconds >= 0,
+                Recording.duration_seconds <= 2.0,
+                ~_func.coalesce(Recording.frequency_hz, 0).between(144370000, 144410000),
+                ~_func.coalesce(Recording.frequency_hz, 0).between(145805000, 145845000),
             )
             .limit(200)
             .all()
@@ -2213,9 +2221,9 @@ def _cleanup_short_recordings():
             return
         deleted = 0
         for rec in short:
-            # Keep APRS and pager frequencies
+            # Keep APRS packet captures.
             freq = rec.frequency_hz or 0
-            if is_aprs_frequency_hz(freq) or is_public_safety_frequency_hz(freq):
+            if is_aprs_frequency_hz(freq):
                 continue
             safe_unlink(rec.audio_path)
             safe_unlink(rec.text_path)
@@ -2225,7 +2233,7 @@ def _cleanup_short_recordings():
             deleted += 1
         if deleted:
             db.commit()
-            print(f"[CLEANUP] Deleted {deleted} short voice recordings (<2s)")
+            print(f"[CLEANUP] Deleted {deleted} short voice recordings (<=2s)")
     except Exception as e:
         print(f"[CLEANUP] error: {e}")
         db.rollback()

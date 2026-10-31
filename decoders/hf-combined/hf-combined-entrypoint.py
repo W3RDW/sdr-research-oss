@@ -262,10 +262,20 @@ def main() -> None:
     print(f"[HF] SSTV freqs:     {[f'{f/1e6:.3f} MHz' for f in SSTV_FREQUENCIES]}", flush=True)
     print(f"[HF] SSTV dwell:     {SSTV_DWELL_SEC}s per freq", flush=True)
 
+    # Hard per-phase watchdog. A wedged RX888 blocks inside the SDDC driver's
+    # readStream/deactivateStream (C code, so Python-level timeouts never fire)
+    # and once hung this loop for days. SIGALRM is left at SIG_DFL, so it
+    # terminates the process even mid-C-call and Kubernetes restarts the pod.
+    hfdl_budget = HFDL_DWELL_SEC + 60
+    sstv_budget = SSTV_DWELL_SEC * len(SSTV_FREQUENCIES) + 120
+
     while True:
         try:
+            signal.alarm(hfdl_budget)
             run_hfdl_phase()
+            signal.alarm(sstv_budget)
             run_sstv_phase()
+            signal.alarm(0)
         except KeyboardInterrupt:
             print("[HF] Shutting down", flush=True)
             break

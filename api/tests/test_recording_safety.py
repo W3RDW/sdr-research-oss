@@ -45,3 +45,19 @@ def test_partitioning_is_opt_in(monkeypatch):
     assert not _recordings_partitioning_enabled()
     monkeypatch.setenv("ENABLE_RECORDINGS_PARTITIONING", "true")
     assert _recordings_partitioning_enabled()
+
+
+@pytest.mark.parametrize("mode,duration,freq,expected", [
+    ("voice", 1.5, 155000000, True),
+    ("voice", 2.0, 146520000, True),
+    ("voice", 2.001, 155000000, False),
+    ("voice", None, 155000000, False),
+    ("voice", 1.0, 144390000, False),
+    ("voice", 1.0, 145825000, False),
+    ("voice", 1.0, None, True),
+    ("cw", 1.0, 14060000, False),
+])
+def test_short_voice_cleanup(mode, duration, freq, expected):
+    from app.services.indexer import should_auto_delete_short_voice
+
+    assert should_auto_delete_short_voice(mode, duration, freq) is expected
