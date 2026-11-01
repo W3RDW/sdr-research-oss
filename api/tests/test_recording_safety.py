@@ -50,7 +50,9 @@ def test_partitioning_is_opt_in(monkeypatch):
 @pytest.mark.parametrize("mode,duration,freq,expected", [
     ("voice", 1.5, 155000000, True),
     ("voice", 2.0, 146520000, True),
-    ("voice", 2.001, 155000000, False),
+    ("voice", 2.66, 224000000, True),
+    ("voice", 2.999, 155000000, True),
+    ("voice", 3.0, 155000000, False),
     ("voice", None, 155000000, False),
     ("voice", 1.0, 144390000, False),
     ("voice", 1.0, 145825000, False),
