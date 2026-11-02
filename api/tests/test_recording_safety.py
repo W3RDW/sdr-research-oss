@@ -63,3 +63,48 @@ def test_short_voice_cleanup(mode, duration, freq, expected):
     from app.services.indexer import should_auto_delete_short_voice
 
     assert should_auto_delete_short_voice(mode, duration, freq) is expected
+
+
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return self.body.encode()
+
+
+@pytest.mark.parametrize("url,expected_path,body", [
+    ("http://vllm:8000/v1", "/v1/chat/completions",
+     '{"choices":[{"message":{"content":"{\\"tags\\":[\\"Fire\\",\\"emergency\\"]}"}}]}'),
+    ("http://ollama:11434", "/api/generate",
+     '{"response":"{\\"tags\\":[\\"Fire\\",\\"emergency\\"]}"}'),
+])
+def test_tagger_backends(monkeypatch, url, expected_path, body):
+    import json
+
+    from app.services import indexer
+
+    sent = {}
+
+    def fake_urlopen(req, timeout):
+        sent["url"] = req.full_url
+        sent["payload"] = json.loads(req.data)
+        return _Resp(body)
+
+    monkeypatch.setattr(indexer.settings, "ollama_enabled", True)
+    monkeypatch.setattr(indexer.settings, "ollama_url", url)
+    monkeypatch.setattr(indexer.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(indexer, "_ollama_circuit_open_until", 0.0)
+
+    tags, failed = indexer.generate_ollama_tags("engine 4 responding to a structure fire on main street")
+
+    assert not failed
+    assert sent["url"].endswith(expected_path)
+    assert ("messages" in sent["payload"]) == expected_path.endswith("completions")
+    assert {"fire", "emergency"} <= set(tags)

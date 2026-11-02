@@ -652,19 +652,34 @@ def generate_ollama_tags(transcript, frequency_label=None, repeater_info=None, o
     if _time.time() < _ollama_circuit_open_until:
         return extract_callsign_tags(transcript), True
     callsign_tags = extract_callsign_tags(transcript)
-    payload = {
-        "model": settings.ollama_model,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.1},
-        "prompt": build_ollama_prompt(
-            transcript, callsign_tags,
-            frequency_label=frequency_label,
-            repeater_info=repeater_info,
-            operator_context=operator_context,
-        ),
-    }
-    endpoint = settings.ollama_url.rstrip("/") + "/api/generate"
+    prompt = build_ollama_prompt(
+        transcript, callsign_tags,
+        frequency_label=frequency_label,
+        repeater_info=repeater_info,
+        operator_context=operator_context,
+    )
+    base_url = settings.ollama_url.rstrip("/")
+    # A URL ending in /v1 is an OpenAI-compatible server (vLLM); otherwise Ollama.
+    openai_compatible = base_url.endswith("/v1")
+    if openai_compatible:
+        payload = {
+            "model": settings.ollama_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": 256,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        endpoint = base_url + "/chat/completions"
+    else:
+        payload = {
+            "model": settings.ollama_model,
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.1},
+            "prompt": prompt,
+        }
+        endpoint = base_url + "/api/generate"
     req = request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
@@ -703,7 +718,10 @@ def generate_ollama_tags(transcript, frequency_label=None, repeater_info=None, o
             tags.append(cleaned)
     try:
         outer = json.loads(body)
-        response_text = outer.get("response", "")
+        if openai_compatible:
+            response_text = outer["choices"][0]["message"].get("content") or ""
+        else:
+            response_text = outer.get("response", "")
         # qwen3.5 "thinking" models may put the answer in the thinking field
         if not response_text and outer.get("thinking"):
             response_text = outer["thinking"]
