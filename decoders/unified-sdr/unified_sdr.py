@@ -346,10 +346,11 @@ class UnifiedSDR(gr.top_block):
         self.rf_squelch_fixed = analog.pwr_squelch_cc(
             RF_SQUELCH_DB, 0.001, 10, False)
         self.nbfm_fixed = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
+        self.dc_fixed = filter.dc_blocker_ff(128, True)
         self.rec_fixed = SquelchRecorder(
             self.fixed_freq, AUDIO_RATE_FM, route_voice_dir(self.fixed_freq))
         self.connect(self.src, self.xlate_fixed, self.rf_squelch_fixed,
-                     self.nbfm_fixed, self.rec_fixed)
+                     self.nbfm_fixed, self.dc_fixed, self.rec_fixed)
 
         # --- RF power probe on fixed channel (feeds AutoSquelch) ---
         self.probe_fixed = analog.probe_avg_mag_sqrd_c(0, 0.001)
@@ -364,13 +365,14 @@ class UnifiedSDR(gr.top_block):
             rf_squelch = analog.pwr_squelch_cc(
                 RF_SQUELCH_DB, 0.001, 10, False)
             nbfm = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
+            dc_block = filter.dc_blocker_ff(128, True)
             rec = SquelchRecorder(0, AUDIO_RATE_FM, VOICE_DIR, inhibited=True)
             probe = analog.probe_avg_mag_sqrd_c(0, 0.001)
-            self.connect(self.src, xlate, rf_squelch, nbfm, rec)
+            self.connect(self.src, xlate, rf_squelch, nbfm, dc_block, rec)
             self.connect(xlate, probe)
             self.dyn_fm.append({
                 "xlate": xlate, "rf_squelch": rf_squelch,
-                "nbfm": nbfm, "recorder": rec, "probe": probe,
+                "nbfm": nbfm, "dc_block": dc_block, "recorder": rec, "probe": probe,
                 "sq_state": {},
                 "freq": None, "assigned_at": None, "idx": i
             })
@@ -664,8 +666,10 @@ class FFTDetector(threading.Thread):
                       f"empty_count={self._fft_empty_count}", flush=True)
             return
 
-        # Take the last complete FFT frame
-        frame = np.array(data[-FFT_SIZE:])
+        # Average recent frames: one noise realization has random tall bins
+        # that otherwise occupy every slot before a real transmission begins.
+        frame_count = min(16, len(data) // FFT_SIZE)
+        frame = np.array(data[-FFT_SIZE * frame_count:]).reshape(frame_count, FFT_SIZE).mean(axis=0)
         self.tb.fft_sink.reset()
 
         power_db = 10.0 * np.log10(frame + 1e-30)
@@ -706,7 +710,8 @@ class FFTDetector(threading.Thread):
                      reverse=True)
         # A detected carrier is signal, not the channel's noise floor. Convert
         # median FFT-bin power into filtered channel power (window + FIR gains).
-        input_noise = float(np.median(frame)) / (self.tb.fft_window_power * math.log(2))
+        median_ratio = math.log(2) if frame_count == 1 else (1 - 1 / (9 * frame_count)) ** 3
+        input_noise = float(np.median(frame)) / (self.tb.fft_window_power * median_ratio)
         fm_floor = 10 * math.log10(input_noise * self.tb.fm_noise_gain + 1e-30)
         cw_floor = 10 * math.log10(input_noise * self.tb.cw_noise_gain + 1e-30)
         for (s, e) in regions:

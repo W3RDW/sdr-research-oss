@@ -13,7 +13,7 @@ def test_retune_drops_stale_channels_and_frames_before_resuming_fixed_monitor():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'UnifiedSDR')
     method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'retune')
     scope = {'time': time, 'RF_SETTLE_SEC': 0.3, 'DWELL_CENTER': 146000000}
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)  # noqa: S102 - trusted repository AST
     events = Mock()
     tb = SimpleNamespace(
         _tune_lock=threading.RLock(), _state_lock=threading.Lock(),
@@ -46,9 +46,9 @@ def test_detected_carrier_uses_spectral_noise_instead_of_signal_as_floor():
         'AUTO_SQUELCH_MARGIN_DB': 6, 'AUTO_SQUELCH_MIN_DB': -85,
         'AUTO_SQUELCH_MAX_DB': -25, 'os': __import__('os'),
     }
-    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)
-    slot = dict(freq=None, idx=0, xlate=Mock(), recorder=Mock(),
-                rf_squelch=Mock(), sq_state={})
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)  # noqa: S102 - trusted repository AST
+    slot = {'freq': None, 'idx': 0, 'xlate': Mock(), 'recorder': Mock(),
+            'rf_squelch': Mock(), 'sq_state': {}}
     tb = SimpleNamespace(dyn_fm=[slot], get_center_hz=lambda: 162000000)
     scope['_assign_fm_slot'](tb, 162550000, -70)
     assert slot['freq'] == 162550000
