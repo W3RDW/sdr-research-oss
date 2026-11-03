@@ -3,6 +3,35 @@ import wave as _wave
 import numpy as np
 
 
+def is_click_burst_audio(audio_path: str, frame_ms: int = 20, active_db: float = -40.0,
+                         max_active_frac: float = 0.25, max_burst_ms: int = 200) -> bool:
+    """True when a recording is only isolated clicks/tone blips, not speech.
+
+    Squelch-gated artifacts are mostly digital silence with a few 20-80 ms
+    spikes; a single spoken syllable is 100-300 ms of continuous energy.
+    """
+    try:
+        with _wave.open(audio_path, "rb") as w:
+            if w.getsampwidth() != 2:
+                return False
+            channels = w.getnchannels()
+            frame_len = int(w.getframerate() * frame_ms / 1000)
+            samples = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")[::channels]
+    except Exception:
+        return False
+    n_frames = len(samples) // frame_len if frame_len else 0
+    if n_frames == 0:
+        return False
+    frames = samples[: n_frames * frame_len].astype(np.float64).reshape(n_frames, frame_len) / 32768.0
+    rms_db = 20.0 * np.log10(np.sqrt(np.mean(frames ** 2, axis=1)) + 1e-9)
+    active = rms_db > active_db
+    longest = run = 0
+    for is_active in active:
+        run = run + 1 if is_active else 0
+        longest = max(longest, run)
+    return bool(active.mean() < max_active_frac and longest * frame_ms < max_burst_ms)
+
+
 def generate_waveform_peaks(audio_path: str, num_peaks: int = 1000) -> dict:
     """Generate waveform peaks for visualization.
 

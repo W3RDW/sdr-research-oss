@@ -13,7 +13,7 @@ from sqlalchemy import text
 from ..config import settings
 from ..database import SessionLocal
 from ..models import Recording
-from .audio import compute_signal_db
+from .audio import compute_signal_db, is_click_burst_audio
 from .alerting import check_alerts
 from .hamdb import callsign_context_str, lookup_callsigns
 from .known_freqs import classify_frequency_group, frequency_group_label, lookup_known_freq
@@ -1093,6 +1093,11 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 safe_unlink(str(wav_file))
                 safe_unlink(text_path)
                 print(f"Auto-deleted short voice recording ({duration:.1f}s): {filename}")
+                continue
+            if should_auto_delete_click_burst(mode, duration, metadata.get("frequency_hz"), str(wav_file)):
+                safe_unlink(str(wav_file))
+                safe_unlink(text_path)
+                print(f"Auto-deleted click-burst recording ({duration:.1f}s): {filename}")
                 continue
             transcript = read_transcript(text_path)
             if should_auto_delete_no_speech(transcript):
@@ -2215,6 +2220,12 @@ def _backfill_ai_tags(batch_size: int = 1000, ollama_budget: dict | None = None,
 def should_auto_delete_short_voice(mode, duration, frequency_hz):
     return (mode == "voice" and duration is not None and 0 <= duration < 3.0
             and not is_aprs_frequency_hz(frequency_hz or 0))
+
+
+def should_auto_delete_click_burst(mode, duration, frequency_hz, audio_path):
+    return (mode == "voice" and duration is not None and duration < 15.0
+            and not is_aprs_frequency_hz(frequency_hz or 0)
+            and is_click_burst_audio(audio_path))
 
 
 def _cleanup_short_recordings():

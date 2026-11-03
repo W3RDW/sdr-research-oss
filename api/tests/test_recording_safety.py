@@ -108,3 +108,49 @@ def test_tagger_backends(monkeypatch, url, expected_path, body):
     assert sent["url"].endswith(expected_path)
     assert ("messages" in sent["payload"]) == expected_path.endswith("completions")
     assert {"fire", "emergency"} <= set(tags)
+
+
+def _write_wav(path, segments, rate=16000):
+    import wave
+
+    import numpy as np
+
+    audio = np.concatenate([
+        (np.sin(2 * np.pi * 1000 * np.arange(int(rate * sec)) / rate) * 0.3 * active)
+        for sec, active in segments
+    ])
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((audio * 32767).astype("<i2").tobytes())
+
+
+@pytest.mark.parametrize("segments,expected", [
+    # Sparse 40 ms blips over 4.4 s (the screenshot artifact)
+    ([(0.5, 0), (0.04, 1), (0.8, 0), (0.04, 1), (1.5, 0), (0.06, 1), (1.4, 0), (0.04, 1)], True),
+    # Speech-like: 250 ms syllables with short gaps
+    ([(0.25, 1), (0.1, 0)] * 12, False),
+    # One real 300 ms word in otherwise silent audio is not a click burst
+    ([(2.0, 0), (0.3, 1), (2.0, 0)], False),
+    # Dense rapid blips exceed the active-fraction limit
+    ([(0.06, 1), (0.1, 0)] * 30, False),
+])
+def test_click_burst_detection(tmp_path, segments, expected):
+    from app.services.audio import is_click_burst_audio
+
+    path = tmp_path / "rec.wav"
+    _write_wav(path, segments)
+    assert is_click_burst_audio(str(path)) is expected
+
+
+def test_click_burst_cleanup_scope(tmp_path):
+    from app.services.indexer import should_auto_delete_click_burst
+
+    path = tmp_path / "rec.wav"
+    _write_wav(path, [(1.0, 0), (0.04, 1), (2.0, 0), (0.04, 1), (1.0, 0)])
+    assert should_auto_delete_click_burst("voice", 4.1, 145482910, str(path))
+    assert not should_auto_delete_click_burst("voice", 4.1, 144390000, str(path))
+    assert not should_auto_delete_click_burst("cw", 4.1, 14060000, str(path))
+    assert not should_auto_delete_click_burst("voice", 20.0, 145482910, str(path))
+    assert not should_auto_delete_click_burst("voice", 4.1, 145482910, str(tmp_path / "missing.wav"))
