@@ -101,7 +101,9 @@ def estimate_dit_ms(runs):
             break
         dot, dash = sum(short) / len(short), sum(long) / len(long)
     dit = dot if dash >= dot * 1.8 else sum(on_durs) / len(on_durs)
-    return max(20.0, min(dit, 300.0))
+    # Outside the supported 4-60 WPM range, crackles must not be coerced into
+    # human Morse timing. Live interference produced 5-8 ms key fragments.
+    return dit if 20.0 <= dit <= 300.0 else None
 
 def decode_runs(runs, dit_ms):
     DAH_THRESH  = dit_ms * 2.0
@@ -169,12 +171,15 @@ def main():
                     continue
                 if text is None:
                     print(f"  No decodable CW", flush=True)
+                    text = "[no decodable cw]"
                 else:
-                    tmp = out + ".tmp"
-                    with open(tmp, "w") as f:
-                        f.write(text + "\n")
-                    os.rename(tmp, out)
                     print(f"  → {text!r}", flush=True)
+                # Cache failed attempts too, so noise does not get decoded
+                # again every ten seconds for the entire retention window.
+                tmp = out + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(text + "\n")
+                os.rename(tmp, out)
         except Exception as exc:
             print(f"Loop error: {exc}", flush=True)
         time.sleep(SLEEP_SEC)
