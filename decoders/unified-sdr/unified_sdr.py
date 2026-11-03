@@ -83,11 +83,7 @@ NUM_DYN_FM     = int(os.getenv("NUM_DYN_FM", "8"))
 NUM_DYN_CW     = int(os.getenv("NUM_DYN_CW", "4"))
 DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "2500"))
 SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "300"))
-# IMPORTANT: clearing slots on retune calls lock()/disconnect()/connect()/unlock() per slot.
-# GNURadio 3.10 connect()/disconnect() are NOT safe for concurrent calls from multiple threads
-# (FFTDetector and ScanScheduler both call into the graph simultaneously → SIGSEGV).
-# Hardcode False here; RF squelch prevents out-of-band recordings on stale slots.
-CLEAR_SLOTS_ON_RETUNE = False
+# Slots are pre-wired; deactivation does not mutate the GNU Radio graph.
 # VHF airband ACARS (128-132 MHz) uses AM modulation — must use envelope detection,
 # not NBFM. Intercept these frequencies before FM/CW slot routing.
 ACARS_FREQ_MIN = 128_000_000
@@ -303,6 +299,8 @@ class UnifiedSDR(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self, "Unified SDR")
         self._state_lock = threading.Lock()
+        self._tune_lock = threading.RLock()
+        self.settle_until = 0.0
         self._gr_lock = threading.Lock()  # serialise all connect()/disconnect() across threads
         self.current_center_hz = DWELL_CENTER
 
@@ -327,6 +325,7 @@ class UnifiedSDR(gr.top_block):
             sys.exit(1)
 
         # --- FFT energy-detection path ---
+        self.fft_window_power = sum(x*x for x in fft.window.blackmanharris(FFT_SIZE))
         self.fft_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, FFT_SIZE)
         self.fft     = fft.fft_vcc(FFT_SIZE, True,
                                     fft.window.blackmanharris(FFT_SIZE),
@@ -341,6 +340,7 @@ class UnifiedSDR(gr.top_block):
         decim_fm = int(SAMPLE_RATE / AUDIO_RATE_FM)
         taps_fm = filter.firdes.low_pass(1.0, SAMPLE_RATE,
                                          NBFM_DEV * 2, NBFM_DEV * 0.5)
+        self.fm_noise_gain = sum(x*x for x in taps_fm)
         self.xlate_fixed = filter.freq_xlating_fir_filter_ccf(
             decim_fm, taps_fm, offset_fixed, SAMPLE_RATE)
         self.rf_squelch_fixed = analog.pwr_squelch_cc(
@@ -379,6 +379,7 @@ class UnifiedSDR(gr.top_block):
         decim_cw = int(SAMPLE_RATE / AUDIO_RATE_CW)
         taps_cw = filter.firdes.low_pass(1.0, SAMPLE_RATE,
                                          CW_BW, 50)
+        self.cw_noise_gain = sum(x*x for x in taps_cw)
         self.dyn_cw = []
         for i in range(NUM_DYN_CW):
             xlate = filter.freq_xlating_fir_filter_ccf(
@@ -468,7 +469,7 @@ class UnifiedSDR(gr.top_block):
         slot["freq"] = None
         slot["assigned_at"] = None
 
-    def _assign_fm_slot(self, freq_hz):
+    def _assign_fm_slot(self, freq_hz, noise_floor=None):
         """Assign a detected FM frequency to an available dynamic slot."""
         for slot in self.dyn_fm:
             if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
@@ -488,12 +489,18 @@ class UnifiedSDR(gr.top_block):
         out_dir = route_voice_dir(freq_hz)
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz, out_dir)
-        target["sq_state"].clear()  # re-learn the noise floor at the new offset
+        target["sq_state"].clear()
+        if noise_floor is not None:
+            target["sq_state"]["floor"] = noise_floor
+            threshold = min(max(noise_floor + AUTO_SQUELCH_MARGIN_DB,
+                                AUTO_SQUELCH_MIN_DB), AUTO_SQUELCH_MAX_DB)
+            target["rf_squelch"].set_threshold(threshold)
+            target["sq_state"]["thr"] = threshold
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] FM slot {target['idx']} → {freq_hz/1e6:.4f} MHz ({os.path.basename(out_dir)})", flush=True)
 
-    def _assign_cw_slot(self, freq_hz):
+    def _assign_cw_slot(self, freq_hz, noise_floor=None):
         """Assign a detected CW frequency to an available dynamic slot."""
         for slot in self.dyn_cw:
             if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
@@ -511,7 +518,13 @@ class UnifiedSDR(gr.top_block):
         offset = freq_hz - self.get_center_hz()
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz)
-        target["sq_state"].clear()  # re-learn the noise floor at the new offset
+        target["sq_state"].clear()
+        if noise_floor is not None:
+            target["sq_state"]["floor"] = noise_floor
+            threshold = min(max(noise_floor + AUTO_SQUELCH_MARGIN_DB,
+                                AUTO_SQUELCH_MIN_DB), AUTO_SQUELCH_MAX_DB)
+            target["rf_squelch"].set_threshold(threshold)
+            target["sq_state"]["thr"] = threshold
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] CW slot {target['idx']} → {freq_hz/1e6:.4f} MHz", flush=True)
@@ -574,15 +587,21 @@ class UnifiedSDR(gr.top_block):
             return self.current_center_hz
 
     def retune(self, center_hz):
-        self.src.set_center_freq(center_hz)
-        with self._state_lock:
-            self.current_center_hz = center_hz
-        # Channel offsets now point at different spectrum — re-learn floors.
-        self.fixed_sq_state.clear()
-        for slot in self.dyn_fm:
-            slot["sq_state"].clear()
-        for slot in self.dyn_cw:
-            slot["sq_state"].clear()
+        # Serialize slot assignment with tuning. Never carry a channel offset
+        # or FFT frame from one band into another band's frequency labels.
+        with self._tune_lock:
+            self.rec_fixed.deactivate()
+            self.deactivate_all_dynamic()
+            self.src.set_center_freq(center_hz)
+            with self._state_lock:
+                self.current_center_hz = center_hz
+            self.fft_sink.reset()
+            self.settle_until = time.time() + RF_SETTLE_SEC
+            self.fixed_sq_state.clear()
+            if center_hz == DWELL_CENTER:
+                self.rec_fixed.activate(self.fixed_freq)
+                self.rec_fixed.set_inhibit(RF_SETTLE_SEC)
+
 
 # ---------------------------------------------------------------------------
 # FFT energy detector (background thread)
@@ -599,8 +618,12 @@ class FFTDetector(threading.Thread):
         while True:
             time.sleep(FFT_INTERVAL)
             try:
-                self._noise_guard()
-                self._scan_fft()
+                with self.tb._tune_lock:
+                    if time.time() < self.tb.settle_until:
+                        self.tb.fft_sink.reset()
+                        continue
+                    self._noise_guard()
+                    self._scan_fft()
             except Exception as e:
                 print(f"[FFT] Error: {e}", flush=True)
 
@@ -678,6 +701,14 @@ class FFTDetector(threading.Thread):
         if in_region:
             regions.append((start, FFT_SIZE))
 
+        # Allocate scarce channels to the strongest peaks first.
+        regions.sort(key=lambda region: float(np.max(power_db[region[0]:region[1]])),
+                     reverse=True)
+        # A detected carrier is signal, not the channel's noise floor. Convert
+        # median FFT-bin power into filtered channel power (window + FIR gains).
+        input_noise = float(np.median(frame)) / (self.tb.fft_window_power * math.log(2))
+        fm_floor = 10 * math.log10(input_noise * self.tb.fm_noise_gain + 1e-30)
+        cw_floor = 10 * math.log10(input_noise * self.tb.cw_noise_gain + 1e-30)
         for (s, e) in regions:
             peak_idx = s + np.argmax(power_db[s:e])
             peak_freq = freqs[peak_idx]
@@ -712,9 +743,9 @@ class FFTDetector(threading.Thread):
                 # Do not mirror the fixed monitor channel into a dynamic slot.
                 if abs(peak_freq - self.tb.fixed_freq) <= 15000:
                     continue
-                self.tb._assign_fm_slot(int(round(peak_freq)))
+                self.tb._assign_fm_slot(int(round(peak_freq)), fm_floor)
             elif slot_mode == "CW":
-                self.tb._assign_cw_slot(int(round(peak_freq)))
+                self.tb._assign_cw_slot(int(round(peak_freq)), cw_floor)
 
         self.detections = detections
         self._write_detections()
@@ -756,19 +787,11 @@ class ScanScheduler(threading.Thread):
             # Scan secondary bands
             for center in SCAN_CENTERS:
                 print(f"[SCAN] Retuning to {center/1e6:.1f} MHz", flush=True)
-                self.tb.close_all_recordings()
-                if CLEAR_SLOTS_ON_RETUNE:
-                    self.tb.clear_dynamic_slots()
                 self.tb.retune(center)
-                self.tb.inhibit_recordings(RF_SETTLE_SEC)
                 time.sleep(SCAN_SEC)
 
-            # Return to primary
             print(f"[SCAN] Returning to {DWELL_CENTER/1e6:.1f} MHz", flush=True)
-            if CLEAR_SLOTS_ON_RETUNE:
-                self.tb.clear_dynamic_slots()
             self.tb.retune(DWELL_CENTER)
-            self.tb.inhibit_recordings(RF_SETTLE_SEC)
 
 # ---------------------------------------------------------------------------
 # Adaptive RF squelch (background thread)
@@ -820,20 +843,21 @@ class AutoSquelch(threading.Thread):
         time.sleep(5)  # let the flowgraph settle
         while True:
             try:
-                lines = [self._update(
-                    f"{self.tb.fixed_freq/1e6:.4f}", self.tb.probe_fixed,
-                    self.tb.rf_squelch_fixed, self.tb.rec_fixed,
-                    self.tb.fixed_sq_state)]
-                for slot in self.tb.dyn_fm + self.tb.dyn_cw:
-                    if slot["freq"] is None:
-                        continue
-                    lines.append(self._update(
-                        f"{slot['freq']/1e6:.4f}", slot["probe"],
-                        slot["rf_squelch"], slot["recorder"],
-                        slot["sq_state"]))
-                if time.time() - self._last_log >= AUTO_SQUELCH_LOG_SEC:
-                    print(f"[SQL] {' | '.join(lines)}", flush=True)
-                    self._last_log = time.time()
+                with self.tb._tune_lock:
+                    lines = [self._update(
+                        f"{self.tb.fixed_freq/1e6:.4f}", self.tb.probe_fixed,
+                        self.tb.rf_squelch_fixed, self.tb.rec_fixed,
+                        self.tb.fixed_sq_state)]
+                    for slot in self.tb.dyn_fm + self.tb.dyn_cw:
+                        if slot["freq"] is None:
+                            continue
+                        lines.append(self._update(
+                            f"{slot['freq']/1e6:.4f}", slot["probe"],
+                            slot["rf_squelch"], slot["recorder"],
+                            slot["sq_state"]))
+                    if time.time() - self._last_log >= AUTO_SQUELCH_LOG_SEC:
+                        print(f"[SQL] {' | '.join(lines)}", flush=True)
+                        self._last_log = time.time()
             except Exception as e:
                 print(f"[SQL] Error: {e}", flush=True)
             time.sleep(AUTO_SQUELCH_INTERVAL)
@@ -867,7 +891,9 @@ class SatWindowMonitor(threading.Thread):
         time.sleep(10)
         while True:
             try:
-                self._tick()
+                with self.tb._tune_lock:
+                    if time.time() >= self.tb.settle_until:
+                        self._tick()
             except Exception as e:
                 print(f"[SAT] Error: {e}", flush=True)
             time.sleep(30)
