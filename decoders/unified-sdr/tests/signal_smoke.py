@@ -4,7 +4,7 @@ Run inside the unified-sdr image: python3 signal_smoke.py /scripts/unified_sdr.p
 No radio hardware is opened. Artifacts are isolated in a temporary directory.
 """
 
-import os, sys, types, time, tempfile, wave
+import os, sys, types, time, tempfile, wave, json
 from pathlib import Path
 
 source_path = Path(sys.argv[1])
@@ -24,6 +24,9 @@ os.environ.update(
     AUTO_SQUELCH_MIN_DB="-85",
     AUTO_SQUELCH_MARGIN_DB="6",
     FFT_INTERVAL="0.2",
+    FFT_SIZE="4096",
+    ENERGY_THRESH_DB="18",
+    DIAGNOSTICS_ENABLED="true",
     AUTO_SQUELCH_INTERVAL_SEC="0.2",
     MIN_REC_SEC="0.5",
     CAPTURE_ID="synthetic",
@@ -76,6 +79,8 @@ ns = {"__name__": "capture_test"}
 src = source_path.read_text().replace('"/data/', '"' + output_dir + "/")
 exec(compile(src, "capture_test", "exec"), ns)
 tb = ns["UnifiedSDR"]()
+request = Path(tb.diagnostic.directory) / "request.json"
+request.write_text(json.dumps({"frequency_hz": 146090000, "duration_seconds": 2}))
 tb.start()
 ns["FFTDetector"](tb).start()
 ns["AutoSquelch"](tb).start()
@@ -100,4 +105,9 @@ with wave.open(str(target)) as wav:
     peak = freqs[np.argmax(spectrum)]
     assert abs(peak - 1000) < 5, f"Expected 1 kHz modulation, got {peak} Hz"
 print("PASS: saved FM recording contains the expected 1 kHz tone", flush=True)
+diagnostics = list(Path(tb.diagnostic.directory).glob("*.wav.json"))
+assert len(diagnostics) == 1
+metadata = json.loads(diagnostics[0].read_text())
+assert metadata["before_squelch"] and metadata["duration_seconds"] == 2
+print("PASS: bounded pre-squelch diagnostic completed in the same graph", flush=True)
 os._exit(0)

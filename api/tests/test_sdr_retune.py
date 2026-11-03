@@ -84,3 +84,21 @@ def test_detected_carrier_uses_spectral_noise_instead_of_signal_as_floor():
     assert slot["sq_state"]["floor"] == -70
     slot["rf_squelch"].set_threshold.assert_called_once_with(-64)
     slot["xlate"].set_center_freq.assert_called_once_with(550000)
+
+
+def test_persistent_detection_cannot_reserve_an_idle_slot_forever():
+    path = Path(__file__).resolve().parents[2] / "decoders/unified-sdr/unified_sdr.py"
+    cls = next(n for n in ast.parse(path.read_text()).body
+               if isinstance(n, ast.ClassDef) and n.name == "UnifiedSDR")
+    method = next(n for n in cls.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_evict_stale_slot")
+    scope = {"time": SimpleNamespace(time=lambda: 1000), "SLOT_RECYCLE_SEC": 300,
+             "SquelchRecorder": SimpleNamespace(RECORDING=1)}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), scope)  # noqa: S102
+    slot = {"freq": 146001000, "assigned_at": 999, "idx": 0,
+            "recorder": SimpleNamespace(state=0, idle_since=100)}
+    active = {"freq": 146520000, "assigned_at": 100, "idx": 1,
+              "recorder": SimpleNamespace(state=1, idle_since=100)}
+    tb = SimpleNamespace(_free_fm_slot=Mock())
+    assert scope["_evict_stale_slot"](tb, [active, slot], "FM") is slot
+    tb._free_fm_slot.assert_called_once_with(slot)
