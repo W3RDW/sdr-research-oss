@@ -45,7 +45,10 @@ RUN git clone --depth=1 https://github.com/sgarriga/slowrx-cli /tmp/slowrx-cli \
 # checkout — there is no separate firmware download. The image lands at
 # /usr/local/share/sddc/SDDC_FX3.img and is uploaded to the RX888's Cypress
 # FX3 USB controller at runtime.
-RUN git clone --depth 1 https://github.com/ik1xpv/ExtIO_sddc /tmp/sddc \
+COPY patches/driver-recovery.patch /tmp/driver-recovery.patch
+RUN git clone https://github.com/ik1xpv/ExtIO_sddc /tmp/sddc \
+    && git -C /tmp/sddc checkout 331b35cd619bf4af20444d64dc35b13a474493e6 \
+    && git -C /tmp/sddc apply /tmp/driver-recovery.patch \
     && cmake -B /tmp/sddc/build -S /tmp/sddc \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
