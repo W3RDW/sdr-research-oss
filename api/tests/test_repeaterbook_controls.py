@@ -57,9 +57,10 @@ def http_error(code, body=None, headers=None):
     return error.HTTPError("https://example.invalid", code, "err", headers or {}, io.BytesIO(payload))
 
 
-UA_BANNED = lambda: http_error(
-    403, {"ok": False, "error_code": "ua_banned", "message": "This User-Agent has been blocked due to abuse."}
-)
+def UA_BANNED():
+    return http_error(
+        403, {"ok": False, "error_code": "ua_banned", "message": "This User-Agent has been blocked due to abuse."}
+    )
 
 
 @pytest.fixture

@@ -82,7 +82,9 @@ CW_RECORD_BANDS = parse_frequency_ranges(
 
 NUM_DYN_FM     = int(os.getenv("NUM_DYN_FM", "8"))
 NUM_DYN_CW     = int(os.getenv("NUM_DYN_CW", "4"))
-DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "2500"))
+# An FM signal's modulation sidebands must not consume separate receiver slots.
+DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "7500"))
+CW_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("CW_SLOT_FREQ_TOLERANCE_HZ", "250"))
 SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "300"))
 # Slots are pre-wired; deactivation does not mutate the GNU Radio graph.
 # VHF airband ACARS (128-132 MHz) uses AM modulation — must use envelope detection,
@@ -109,6 +111,9 @@ CW_DIR         = "/data/audio/cw"
 PAGER_DIR      = "/data/audio/pager"
 DET_DIR        = "/data/detections"
 HEARTBEAT_PATH = os.path.join(DET_DIR, f"sdr_heartbeat_{CAPTURE_ID}.json")
+CAPTURE_SOURCE = os.getenv("CAPTURE_SOURCE", CAPTURE_ID)
+CAPTURE_DEVICE_SERIAL = os.getenv("CAPTURE_DEVICE_SERIAL", "")
+FIXED_MONITOR_ENABLED = os.getenv("FIXED_MONITOR_ENABLED", "true").lower() == "true"
 for d in (VOICE_DIR, CW_DIR, PAGER_DIR, DET_DIR):
     os.makedirs(d, exist_ok=True)
     # Clear this capture's own orphaned in-progress files from a prior crash.
@@ -194,10 +199,7 @@ class SquelchRecorder(gr.sync_block):
         if self.wf is None:
             return
         self.wf.close()
-        if (self.samples_written < self.min_samples
-                or (not self.is_cw and self.samples_written < 3 * self.audio_rate
-                    and not (144370000 <= self.freq_hz <= 144410000
-                             or 145805000 <= self.freq_hz <= 145845000))):
+        if self.samples_written < self.min_samples:
             try:
                 os.remove(self._tmp_path)
                 print(f"[REC] Discarded short recording {self.current_path}", flush=True)
@@ -215,6 +217,12 @@ class SquelchRecorder(gr.sync_block):
                     pass
             else:
                 try:
+                    metadata_path = os.path.splitext(self.current_path)[0] + ".capture.json"
+                    with open(metadata_path + ".tmp", "w") as metadata:
+                        json.dump({"capture_id": CAPTURE_ID, "source_sdr": CAPTURE_SOURCE,
+                                   "device_serial": CAPTURE_DEVICE_SERIAL,
+                                   "frequency_hz": self.freq_hz, "sample_rate": SAMPLE_RATE}, metadata)
+                    os.replace(metadata_path + ".tmp", metadata_path)
                     os.rename(self._tmp_path, self.current_path)
                     print(f"[REC] Closed {self.current_path} "
                           f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
@@ -343,6 +351,29 @@ class ChannelFilter(gr.hier_block2):
 # ---------------------------------------------------------------------------
 # Flowgraph
 # ---------------------------------------------------------------------------
+class CaptureHealth:
+    def __init__(self):
+        self.started_at = time.monotonic()
+        self.last_sample_at = self.started_at
+        self.last_sample_timestamp = 0.0
+        self._lock = threading.Lock()
+
+    def mark_samples(self):
+        with self._lock:
+            self.last_sample_at = time.monotonic()
+            self.last_sample_timestamp = time.time()
+
+    def snapshot(self, workers, timeout_sec=45.0):
+        with self._lock:
+            age = time.monotonic() - self.last_sample_at
+            timestamp = self.last_sample_timestamp
+        failed = next((worker.name for worker in workers if not worker.is_alive()), None)
+        error = f"{failed} stopped" if failed else None
+        if age > timeout_sec:
+            error = f"No fresh FFT samples for {age:.1f}s"
+        return timestamp, age, error
+
+
 class UnifiedSDR(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self, "Unified SDR")
@@ -351,17 +382,23 @@ class UnifiedSDR(gr.top_block):
         self.settle_until = 0.0
         self._gr_lock = threading.Lock()  # serialise all connect()/disconnect() across threads
         self.current_center_hz = DWELL_CENTER
+        self.capture_health = CaptureHealth()
 
         # --- Source ---
         self.src = blocks.null_source(gr.sizeof_gr_complex)
         try:
-            import osmosdr
             _src_args = OSMOSDR_ARGS if OSMOSDR_ARGS else f"rtl_tcp={RTL_TCP_HOST}:{RTL_TCP_PORT}"
-            self.src = osmosdr.source(args=_src_args)
+            if _src_args.startswith("rtl_tcp="):
+                from rtl_tcp_source import RTLTCPSource
+                host, port = _src_args.removeprefix("rtl_tcp=").rsplit(":", 1)
+                self.src = RTLTCPSource(host, int(port))
+            else:
+                import osmosdr
+                self.src = osmosdr.source(args=_src_args)
             self.src.set_sample_rate(SAMPLE_RATE)
             self.src.set_center_freq(DWELL_CENTER)
             self.src.set_gain_mode(False)
-            self.src.set_gain(int(os.getenv("RF_GAIN", "30")))
+            self.src.set_gain(float(os.getenv("RF_GAIN", "30")))
             try:
                 self.src.set_freq_corr(PPM_CORRECTION)
             except Exception:
@@ -394,7 +431,8 @@ class UnifiedSDR(gr.top_block):
         self.nbfm_fixed = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
         self.dc_fixed = filter.dc_blocker_ff(128, True)
         self.rec_fixed = SquelchRecorder(
-            self.fixed_freq, AUDIO_RATE_FM, route_voice_dir(self.fixed_freq))
+            self.fixed_freq, AUDIO_RATE_FM, route_voice_dir(self.fixed_freq),
+            inhibited=not FIXED_MONITOR_ENABLED)
         self.connect(self.src, self.xlate_fixed, self.rf_squelch_fixed,
                      self.nbfm_fixed, self.dc_fixed, self.rec_fixed)
 
@@ -548,7 +586,7 @@ class UnifiedSDR(gr.top_block):
     def _assign_cw_slot(self, freq_hz, noise_floor=None):
         """Assign a detected CW frequency to an available dynamic slot."""
         for slot in self.dyn_cw:
-            if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
+            if frequency_matches(slot["freq"], freq_hz, CW_SLOT_FREQ_TOLERANCE_HZ):
                 slot["assigned_at"] = time.time()
                 return
         target = None
@@ -643,7 +681,7 @@ class UnifiedSDR(gr.top_block):
             self.fft_sink.reset()
             self.settle_until = time.time() + RF_SETTLE_SEC
             self.fixed_sq_state.clear()
-            if center_hz == DWELL_CENTER:
+            if center_hz == DWELL_CENTER and FIXED_MONITOR_ENABLED:
                 self.rec_fixed.activate(self.fixed_freq)
                 self.rec_fixed.set_inhibit(RF_SETTLE_SEC)
 
@@ -714,6 +752,7 @@ class FFTDetector(threading.Thread):
         frame_count = min(16, len(data) // FFT_SIZE)
         frame = np.array(data[-FFT_SIZE * frame_count:]).reshape(frame_count, FFT_SIZE).mean(axis=0)
         self.tb.fft_sink.reset()
+        self.tb.capture_health.mark_samples()
 
         power_db = 10.0 * np.log10(frame + 1e-30)
         # FFT bins are already shifted by fft_vcc with shift=True
@@ -762,6 +801,11 @@ class FFTDetector(threading.Thread):
             peak_freq = freqs[peak_idx]
             peak_power = float(power_db[peak_idx])
             bw = float(freqs[min(e, FFT_SIZE - 1)] - freqs[s])
+            # Zero-IF receivers produce a DC spike at the tuning center. Also
+            # avoid filter rolloff at the outer 5 percent of the sampled span.
+            offset = abs(peak_freq - center_hz)
+            if offset < max(1000, 2 * SAMPLE_RATE / FFT_SIZE) or offset > 0.45 * SAMPLE_RATE:
+                continue
 
             slot_mode = classify_peak_for_recording(
                 peak_freq,
@@ -802,6 +846,8 @@ class FFTDetector(threading.Thread):
         out = {
             "source": "unified_sdr",
             "capture_id": CAPTURE_ID,
+            "source_sdr": CAPTURE_SOURCE,
+            "device_serial": CAPTURE_DEVICE_SERIAL,
             "sample_rate": SAMPLE_RATE,
             "center_freq_hz": self.tb.get_center_hz(),
             "timestamp": time.time(),
@@ -975,17 +1021,27 @@ class SatWindowMonitor(threading.Thread):
 # RF power monitor (background thread — logs noise floor for squelch tuning)
 # ---------------------------------------------------------------------------
 class RFPowerMonitor(threading.Thread):
-    def __init__(self, tb):
+    def __init__(self, tb, workers):
         super().__init__(daemon=True)
         self.tb = tb
+        self.workers = workers
 
     def run(self):
         time.sleep(3)  # let flowgraph settle
         while True:
             try:
+                sample_timestamp, sample_age, error = self.tb.capture_health.snapshot(self.workers)
+                if error:
+                    print(f"[HEALTH] {error}; exiting for receiver restart", flush=True)
+                    try:
+                        os.remove(HEARTBEAT_PATH)
+                    except FileNotFoundError:
+                        pass
+                    os._exit(1)
                 heartbeat = {
                     "capture_id": CAPTURE_ID,
-                    "timestamp": time.time(),
+                    "timestamp": sample_timestamp,
+                    "sample_age_sec": sample_age,
                     "center_freq_hz": self.tb.get_center_hz(),
                     "fixed_monitor_hz": self.tb.fixed_freq,
                 }
@@ -1031,7 +1087,7 @@ def main():
     scanner = ScanScheduler(tb)
     scanner.start()
 
-    rf_mon = RFPowerMonitor(tb)
+    rf_mon = RFPowerMonitor(tb, [fft_det, scanner])
     rf_mon.start()
 
     if AUTO_SQUELCH:

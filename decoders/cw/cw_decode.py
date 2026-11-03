@@ -90,8 +90,17 @@ def estimate_dit_ms(runs):
     on_durs = sorted(d for is_on, d in runs if is_on and d > 5)
     if len(on_durs) < 3:
         return None
-    half = on_durs[: max(1, len(on_durs) // 2)]
-    dit  = sum(half) / len(half)
+    # The shorter half can include dashes (CQ has five dashes and only three
+    # dots). Separate the two duration clusters instead of averaging them.
+    dot, dash = on_durs[0], on_durs[-1]
+    for _ in range(8):
+        boundary = (dot + dash) / 2
+        short = [d for d in on_durs if d <= boundary]
+        long = [d for d in on_durs if d > boundary]
+        if not short or not long:
+            break
+        dot, dash = sum(short) / len(short), sum(long) / len(long)
+    dit = dot if dash >= dot * 1.8 else sum(on_durs) / len(on_durs)
     return max(20.0, min(dit, 300.0))
 
 def decode_runs(runs, dit_ms):

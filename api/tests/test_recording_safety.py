@@ -48,21 +48,56 @@ def test_partitioning_is_opt_in(monkeypatch):
 
 
 @pytest.mark.parametrize("mode,duration,freq,expected", [
-    ("voice", 1.5, 155000000, True),
-    ("voice", 2.0, 146520000, True),
-    ("voice", 2.66, 224000000, True),
-    ("voice", 2.999, 155000000, True),
+    ("voice", 0.499, 155000000, True),
+    ("voice", 0.5, 155000000, False),
+    ("voice", 1.5, 155000000, False),
+    ("voice", 2.0, 146520000, False),
+    ("voice", 2.66, 224000000, False),
+    ("voice", 2.999, 155000000, False),
     ("voice", 3.0, 155000000, False),
     ("voice", None, 155000000, False),
     ("voice", 1.0, 144390000, False),
     ("voice", 1.0, 145825000, False),
-    ("voice", 1.0, None, True),
+    ("voice", 1.0, None, False),
     ("cw", 1.0, 14060000, False),
 ])
 def test_short_voice_cleanup(mode, duration, freq, expected):
     from app.services.indexer import should_auto_delete_short_voice
 
     assert should_auto_delete_short_voice(mode, duration, freq) is expected
+
+
+@pytest.mark.parametrize("frequency,source", [
+    (52000000, "airspy-2m"), (7030000, "rtl-hf"), (155000000, "rtl-70cm"),
+])
+def test_recording_source_uses_device_provenance(tmp_path, frequency, source):
+    import json
+    from app.services.indexer import recording_source
+
+    wav = tmp_path / "capture.wav"
+    wav.with_suffix(".capture.json").write_text(json.dumps({"source_sdr": source}))
+    assert recording_source(wav, "voice", frequency) == source
+
+
+def test_recording_source_legacy_and_broken_sidecar(tmp_path):
+    from app.services.indexer import recording_source
+
+    wav = tmp_path / "capture.wav"
+    assert recording_source(wav, "voice", 146520000) == "airspy-2m"
+    wav.with_suffix(".capture.json").write_text("[]")
+    assert recording_source(wav, "voice", 443450000) == "rtl-70cm"
+
+
+def test_audio_cleanup_removes_capture_provenance(tmp_path):
+    from app.services.indexer import safe_unlink
+
+    wav = tmp_path / "capture.wav"
+    sidecar = wav.with_suffix(".capture.json")
+    wav.write_bytes(b"test")
+    sidecar.write_text('{"source_sdr":"rtl-hf"}')
+    safe_unlink(str(wav))
+    assert not wav.exists()
+    assert not sidecar.exists()
 
 
 class _Resp:

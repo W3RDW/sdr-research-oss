@@ -17,7 +17,8 @@ def test_retune_drops_stale_channels_and_frames_before_resuming_fixed_monitor():
     method = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "retune"
     )
-    scope = {"time": time, "RF_SETTLE_SEC": 0.3, "DWELL_CENTER": 146000000}
+    scope = {"time": time, "RF_SETTLE_SEC": 0.3, "DWELL_CENTER": 146000000,
+             "FIXED_MONITOR_ENABLED": True}
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), scope)  # noqa: S102 - trusted repository AST
     events = Mock()
     tb = SimpleNamespace(

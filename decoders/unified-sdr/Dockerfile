@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY bandplan.py unified_sdr.py /app/
+COPY bandplan.py rtl_tcp_source.py unified_sdr.py /app/
 
 # Output directory mounted by host / k8s. Created here as a default.
 RUN mkdir -p /data/audio /data/text /data/detections
