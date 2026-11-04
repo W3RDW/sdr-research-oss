@@ -1,7 +1,7 @@
 import re
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -18,6 +18,16 @@ def _safe_parse_tags(raw_tags):
     if isinstance(raw_tags, list):
         return [str(tag).strip() for tag in raw_tags if str(tag).strip()]
     return parse_ai_tags(raw_tags)
+
+
+def _count_grouped_tags(rows, callsigns_only=False):
+    """Preserve per-record tag counts without transferring each recording."""
+    counts = Counter()
+    for raw_tags, occurrences in rows:
+        for tag in _safe_parse_tags(raw_tags):
+            if not callsigns_only or _CALLSIGN_TAG_RE.match(tag):
+                counts[tag] += occurrences
+    return counts
 
 
 def _frequency_group_fields(
@@ -109,14 +119,12 @@ def _compute_stats(db: Session):
     ).fetchall()
     daily = [{"date": str(row.day), "count": row.cnt} for row in daily_rows]
 
-    tag_counter: Counter[str] = Counter()
-    for (raw_tags,) in (
-        db.query(Recording.ai_tags)
+    tag_counter = _count_grouped_tags(
+        db.query(Recording.ai_tags, func.count(Recording.id))
         .filter(Recording.ai_tags.isnot(None))
+        .group_by(Recording.ai_tags)
         .yield_per(1000)
-    ):
-        for tag in _safe_parse_tags(raw_tags):
-            tag_counter[tag] += 1
+    )
     top_tags = [
         {"tag": tag, "count": count}
         for tag, count in tag_counter.most_common(20)
@@ -242,6 +250,36 @@ def _compute_stats(db: Session):
     return result
 
 
+# Keep repeated frequency-page requests from rescanning the same history.
+# Grouping tag sets below bounds Python work by distinct tag sets, rather than
+# millions of individual APRS packets. Cache keys retain the requested tolerance.
+_frequency_cache = OrderedDict()
+_frequency_cache_lock = threading.Lock()
+_FREQUENCY_CACHE_LIMIT = 128
+
+
+def _cached_frequency_stats(key):
+    with _frequency_cache_lock:
+        entry = _frequency_cache.get(key)
+        if entry is None:
+            return None
+        timestamp, data = entry
+        if time.monotonic() - timestamp >= _CACHE_TTL:
+            del _frequency_cache[key]
+            return None
+        _frequency_cache.move_to_end(key)
+        return data
+
+
+def _store_frequency_stats(key, data):
+    with _frequency_cache_lock:
+        _frequency_cache[key] = (time.monotonic(), data)
+        _frequency_cache.move_to_end(key)
+        while len(_frequency_cache) > _FREQUENCY_CACHE_LIMIT:
+            _frequency_cache.popitem(last=False)
+    return data
+
+
 @router.get("/frequency/{frequency_hz}")
 def get_frequency_stats(
     frequency_hz: float,
@@ -251,7 +289,15 @@ def get_frequency_stats(
 ):
     """Detailed statistics for a specific frequency (+/- tolerance_hz)."""
     response.headers["Cache-Control"] = "public, max-age=60"
+    key = (frequency_hz, tolerance_hz)
+    cached = _cached_frequency_stats(key)
+    if cached is not None:
+        return cached
+    result = _compute_frequency_stats(frequency_hz, tolerance_hz, db)
+    return _store_frequency_stats(key, result)
 
+
+def _compute_frequency_stats(frequency_hz, tolerance_hz, db):
     freq_min = frequency_hz - tolerance_hz
     freq_max = frequency_hz + tolerance_hz
 
@@ -324,18 +370,16 @@ def get_frequency_stats(
     hour_map = {row.hour: row.cnt for row in hour_rows}
     by_hour = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
 
-    callsign_counter: Counter[str] = Counter()
-    for (raw_tags,) in (
-        db.query(Recording.ai_tags)
+    callsign_counter = _count_grouped_tags(
+        db.query(Recording.ai_tags, func.count(Recording.id))
         .filter(
             Recording.frequency_hz.between(freq_min, freq_max),
             Recording.ai_tags.isnot(None),
         )
-        .yield_per(1000)
-    ):
-        for tag in _safe_parse_tags(raw_tags):
-            if _CALLSIGN_TAG_RE.match(tag):
-                callsign_counter[tag] += 1
+        .group_by(Recording.ai_tags)
+        .yield_per(1000),
+        callsigns_only=True,
+    )
     top_callsigns = [
         {"callsign": tag, "count": count}
         for tag, count in callsign_counter.most_common(10)

@@ -4,6 +4,8 @@ Unified SDR flowgraph — single rtl_tcp connection serving FFT detection,
 fixed voice monitor, dynamic FM channels, and dynamic CW channels.
 """
 import os, sys, json, time, wave, struct, threading, math
+from collections import deque
+from functools import lru_cache
 import numpy as np
 from gnuradio import gr, blocks, filter, analog, fft
 from bandplan import (
@@ -22,7 +24,7 @@ _rtl_port_raw  = os.getenv("RTL_TCP_PORT", "1234")  # k8s injects "tcp://IP:PORT
 RTL_TCP_PORT   = int(_rtl_port_raw.rsplit(":", 1)[-1].strip("/"))
 # If set, overrides the rtl_tcp device string entirely (e.g. SoapyRemote for Airspy):
 #   soapy=0,remote=airspy-soapy.sdr-research.svc.cluster.local:55132,driver=airspy
-OSMOSDR_ARGS   = os.getenv("OSMOSDR_ARGS", "rtl=0")
+OSMOSDR_ARGS   = os.getenv("OSMOSDR_ARGS", "")
 SAMPLE_RATE    = int(os.getenv("SAMPLE_RATE", "2400000"))
 DWELL_CENTER   = int(os.getenv("DWELL_CENTER_HZ", "146000000"))
 SCAN_CENTERS   = json.loads(os.getenv("SCAN_CENTERS", "[]"))
@@ -34,6 +36,11 @@ SQUELCH_CLOSE  = float(os.getenv("SQUELCH_CLOSE_DB", "-55"))
 TAIL_SEC       = float(os.getenv("TAIL_SEC", "1.5"))
 MIN_REC_SEC    = float(os.getenv("MIN_REC_SEC", "0.5"))
 MAX_REC_SEC    = float(os.getenv("MAX_REC_SEC", "120"))
+# Apply headroom only at FM PCM conversion; RF/noise decisions stay unscaled.
+FM_PCM_GAIN    = 10 ** (-float(os.getenv("FM_HEADROOM_DB", "6")) / 20.0)
+FM_PREROLL_SEC = max(0.0, min(float(os.getenv("FM_PREROLL_SEC", "0.35")), 2.0))
+DIAGNOSTICS_ENABLED = os.getenv("DIAGNOSTICS_ENABLED", "false").lower() == "true"
+DIAGNOSTIC_ROOT = "/data/diagnostics"
 RF_SQUELCH_DB  = float(os.getenv("RF_SQUELCH_DB", "-50"))
 # Adaptive RF squelch: track each channel's noise floor and hold the squelch
 # threshold a fixed margin above it. Static thresholds have failed in both
@@ -81,13 +88,11 @@ CW_RECORD_BANDS = parse_frequency_ranges(
 
 NUM_DYN_FM     = int(os.getenv("NUM_DYN_FM", "8"))
 NUM_DYN_CW     = int(os.getenv("NUM_DYN_CW", "4"))
-DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "2500"))
+# An FM signal's modulation sidebands must not consume separate receiver slots.
+DYN_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("DYN_SLOT_FREQ_TOLERANCE_HZ", "7500"))
+CW_SLOT_FREQ_TOLERANCE_HZ = int(os.getenv("CW_SLOT_FREQ_TOLERANCE_HZ", "250"))
 SLOT_RECYCLE_SEC = float(os.getenv("SLOT_RECYCLE_SEC", "300"))
-# IMPORTANT: clearing slots on retune calls lock()/disconnect()/connect()/unlock() per slot.
-# GNURadio 3.10 connect()/disconnect() are NOT safe for concurrent calls from multiple threads
-# (FFTDetector and ScanScheduler both call into the graph simultaneously → SIGSEGV).
-# Hardcode False here; RF squelch prevents out-of-band recordings on stale slots.
-CLEAR_SLOTS_ON_RETUNE = False
+# Slots are pre-wired; deactivation does not mutate the GNU Radio graph.
 # VHF airband ACARS (128-132 MHz) uses AM modulation — must use envelope detection,
 # not NBFM. Intercept these frequencies before FM/CW slot routing.
 ACARS_FREQ_MIN = 128_000_000
@@ -112,6 +117,9 @@ CW_DIR         = "/data/audio/cw"
 PAGER_DIR      = "/data/audio/pager"
 DET_DIR        = "/data/detections"
 HEARTBEAT_PATH = os.path.join(DET_DIR, f"sdr_heartbeat_{CAPTURE_ID}.json")
+CAPTURE_SOURCE = os.getenv("CAPTURE_SOURCE", CAPTURE_ID)
+CAPTURE_DEVICE_SERIAL = os.getenv("CAPTURE_DEVICE_SERIAL", "")
+FIXED_MONITOR_ENABLED = os.getenv("FIXED_MONITOR_ENABLED", "true").lower() == "true"
 for d in (VOICE_DIR, CW_DIR, PAGER_DIR, DET_DIR):
     os.makedirs(d, exist_ok=True)
     # Clear this capture's own orphaned in-progress files from a prior crash.
@@ -149,13 +157,19 @@ class SquelchRecorder(gr.sync_block):
     def __init__(self, freq_hz, audio_rate, out_dir, is_cw=False,
                  open_db=SQUELCH_OPEN, close_db=SQUELCH_CLOSE,
                  tail_seconds=TAIL_SEC, min_seconds=MIN_REC_SEC,
-                 max_seconds=MAX_REC_SEC, inhibited=False):
+                 max_seconds=MAX_REC_SEC, inhibited=False, rf_gated=False):
         gr.sync_block.__init__(self, name="SquelchRecorder",
-                               in_sig=[np.float32], out_sig=None)
+                               in_sig=[np.float32] * (2 if rf_gated else 1), out_sig=None)
         self.freq_hz      = freq_hz
         self.audio_rate   = audio_rate
         self.out_dir      = out_dir
         self.is_cw        = is_cw
+        self.rf_gated     = rf_gated
+        self.pcm_gain     = FM_PCM_GAIN if rf_gated else 1.0
+        self._preroll = deque()
+        self._preroll_count = 0
+        self._preroll_limit = int(FM_PREROLL_SEC * audio_rate) if rf_gated else 0
+        self._preroll_written = 0
         self.open_thresh  = 10 ** (open_db / 20.0)
         self.close_thresh = 10 ** (close_db / 20.0)
         self.tail_samples = int(tail_seconds * audio_rate)
@@ -163,6 +177,7 @@ class SquelchRecorder(gr.sync_block):
         self.max_samples  = int(max_seconds * audio_rate)
 
         self.state         = self.IDLE
+        self.idle_since    = time.time()
         self.wf            = None
         self.current_path  = None
         self.samples_written = 0
@@ -191,16 +206,38 @@ class SquelchRecorder(gr.sync_block):
         self._sumsq = 0.0
         self._nactive = 0
         self.current_path = path
+        self._preroll_written = 0
         print(f"[REC] Opened {path}", flush=True)
+
+    def _clear_preroll(self):
+        self._preroll.clear()
+        self._preroll_count = 0
+
+    def _remember(self, samples):
+        if not self._preroll_limit:
+            return
+        chunk = samples[-self._preroll_limit:].copy()
+        self._preroll.append(chunk)
+        self._preroll_count += len(chunk)
+        while self._preroll_count > self._preroll_limit:
+            excess = self._preroll_count - self._preroll_limit
+            oldest = self._preroll.popleft()
+            if len(oldest) > excess:
+                self._preroll.appendleft(oldest[excess:])
+                self._preroll_count -= excess
+            else:
+                self._preroll_count -= len(oldest)
+
+    def _write_audio(self, samples):
+        pcm = (np.clip(samples * self.pcm_gain, -1.0, 1.0) * 32767).astype(np.int16)
+        self.wf.writeframes(pcm.tobytes())
+        self.samples_written += len(samples)
 
     def _close_wav(self):
         if self.wf is None:
             return
         self.wf.close()
-        if (self.samples_written < self.min_samples
-                or (not self.is_cw and self.samples_written < 3 * self.audio_rate
-                    and not (144370000 <= self.freq_hz <= 144410000
-                             or 145805000 <= self.freq_hz <= 145845000))):
+        if self.samples_written - self._preroll_written < self.min_samples:
             try:
                 os.remove(self._tmp_path)
                 print(f"[REC] Discarded short recording {self.current_path}", flush=True)
@@ -218,12 +255,22 @@ class SquelchRecorder(gr.sync_block):
                     pass
             else:
                 try:
+                    metadata_path = os.path.splitext(self.current_path)[0] + ".capture.json"
+                    with open(metadata_path + ".tmp", "w") as metadata:
+                        json.dump({"capture_id": CAPTURE_ID, "source_sdr": CAPTURE_SOURCE,
+                                   "device_serial": CAPTURE_DEVICE_SERIAL,
+                                   "frequency_hz": self.freq_hz, "sample_rate": SAMPLE_RATE,
+                                   "pcm_gain": self.pcm_gain,
+                                   "preroll_seconds": self._preroll_written / self.audio_rate,
+                                   "unscaled_active_rms_db": rms_db}, metadata)
+                    os.replace(metadata_path + ".tmp", metadata_path)
                     os.rename(self._tmp_path, self.current_path)
                     print(f"[REC] Closed {self.current_path} "
                           f"({self.samples_written / self.audio_rate:.1f}s, rms={rms_db:.1f} dB)", flush=True)
                 except OSError as e:
                     print(f"[REC] Rename failed for {self.current_path}: {e}", flush=True)
         self.wf = None
+        self.idle_since = time.time()
 
     def close_if_recording(self):
         """Force-close for retune."""
@@ -236,6 +283,7 @@ class SquelchRecorder(gr.sync_block):
         """Suppress squelch-open for duration_sec (called after retune for PLL settling)."""
         with self._lock:
             self._inhibit_until = time.time() + duration_sec
+            self._clear_preroll()
 
     def activate(self, freq_hz, out_dir=None):
         """Reconfigure and un-inhibit this recorder for a new frequency."""
@@ -244,6 +292,8 @@ class SquelchRecorder(gr.sync_block):
                 self._close_wav()
                 self.state = self.IDLE
             self.freq_hz = freq_hz
+            self._clear_preroll()
+            self.idle_since = time.time()
             if out_dir is not None:
                 self.out_dir = out_dir
             self._inhibit_until = 0.0
@@ -253,6 +303,7 @@ class SquelchRecorder(gr.sync_block):
         """Inhibit forever and close any open recording."""
         with self._lock:
             self._inhibit_until = float('inf')
+            self._clear_preroll()
             if self.state == self.RECORDING:
                 self._close_wav()
                 self.state = self.IDLE
@@ -260,14 +311,29 @@ class SquelchRecorder(gr.sync_block):
     def work(self, input_items, output_items):
         samples = input_items[0]
         n = len(samples)
-        rms = math.sqrt(np.mean(samples ** 2) + 1e-30)
+        # The second input is RF power AFTER the RF gate. The audio input is
+        # demodulated BEFORE that gate, preserving a bounded lead-in buffer.
+        mask = input_items[1] > 0 if self.rf_gated else None
+        measured = samples[mask] if self.rf_gated else samples
+        rms = math.sqrt(float(np.mean(measured ** 2)) + 1e-30) if len(measured) else 0.0
 
         with self._lock:
+            opened = False
             if self.state == self.IDLE:
+                if time.time() < self._inhibit_until:
+                    self._clear_preroll()
+                    return n
                 if rms > self.open_thresh and time.time() >= self._inhibit_until:
                     self._open_wav()
+                    for chunk in self._preroll:
+                        self._write_audio(chunk)
+                    self._preroll_written = self._preroll_count
+                    self._clear_preroll()
                     self.state = self.RECORDING
                     self.tail_counter = 0
+                    opened = True
+                else:
+                    self._remember(samples)
             elif self.state == self.RECORDING:
                 if rms < self.close_thresh:
                     self.tail_counter += n
@@ -276,17 +342,18 @@ class SquelchRecorder(gr.sync_block):
                         self.state = self.IDLE
                         # A squelch-close means real inter-transmission silence.
                         self.consecutive_rollovers = 0
+                        self._remember(samples)
                         return n
                 else:
                     self.tail_counter = 0
 
             if self.state == self.RECORDING and self.wf is not None:
-                pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-                self.wf.writeframes(pcm.tobytes())
-                self.samples_written += n
+                # Keep the opening block's lead-in; silence closed-gate tails.
+                audio = np.where(mask, samples, 0.0) if self.rf_gated and not opened else samples
+                self._write_audio(audio)
                 if rms > ACTIVE_AUDIO_RMS:
-                    self._sumsq += rms * rms * n
-                    self._nactive += n
+                    self._sumsq += rms * rms * len(measured)
+                    self._nactive += len(measured)
                 # Roll over when the recording hits the max duration.
                 if self.samples_written >= self.max_samples:
                     print(f"[REC] Max duration reached, rolling over {self.current_path}", flush=True)
@@ -297,25 +364,189 @@ class SquelchRecorder(gr.sync_block):
         return n
 
 # ---------------------------------------------------------------------------
+class BoundedDiagnosticRecorder(gr.sync_block):
+    """On-request raw FM audio/RF measurements, outside indexed recordings.
+
+    Only the existing fixed-channel graph feeds this sink; no device is opened.
+    Requests use /data/diagnostics/<capture_id>/request.json and are capped at
+    30 seconds. A request for another channel is rejected rather than mislabeled.
+    """
+
+    def __init__(self, freq_hz, is_tuned):
+        gr.sync_block.__init__(self, name="BoundedDiagnosticRecorder",
+                               in_sig=[np.float32] * 3, out_sig=None)
+        self.freq_hz = freq_hz
+        self.is_tuned = is_tuned
+        self.directory = os.path.join(DIAGNOSTIC_ROOT, CAPTURE_ID)
+        os.makedirs(self.directory, exist_ok=True)
+        self.next_check = 0.0
+        self.wf = None
+
+    def _request(self):
+        request_path = os.path.join(self.directory, "request.json")
+        try:
+            with open(request_path) as f:
+                request = json.load(f)
+            os.remove(request_path)
+        except FileNotFoundError:
+            return
+        duration = float(request["duration_seconds"])
+        if (int(request["frequency_hz"]) != self.freq_hz or
+                not math.isfinite(duration) or duration <= 0 or not self.is_tuned()):
+            raise ValueError("Diagnostic channel is not tuned or duration is invalid")
+        self.path = os.path.join(self.directory, f"{self.freq_hz}_{time.time_ns()}.wav")
+        self.wf = wave.open(self.path + ".part", "wb")
+        self.wf.setnchannels(1)
+        self.wf.setsampwidth(2)
+        self.wf.setframerate(AUDIO_RATE_FM)
+        self.remaining = max(1, int(min(duration, 30.0) * AUDIO_RATE_FM))
+        self.total = 0
+        self.rf_sum = 0.0
+        self.rf_open = 0
+        self.peak = 0.0
+        print(f"[DIAG] Capturing before squelch: {self.path}", flush=True)
+
+    def _finish(self, reason="complete"):
+        self.wf.close()
+        self.wf = None
+        os.replace(self.path + ".part", self.path)
+        metadata = {
+            "frequency_hz": self.freq_hz, "capture_id": CAPTURE_ID,
+            "source_sdr": CAPTURE_SOURCE, "device_serial": CAPTURE_DEVICE_SERIAL,
+            "duration_seconds": self.total / AUDIO_RATE_FM,
+            "pcm_gain": 0.125, "before_squelch": True, "reason": reason,
+            "rf_mean_dbfs": 10 * math.log10(self.rf_sum / max(1, self.total) + 1e-30),
+            "rf_gate_open_fraction": self.rf_open / max(1, self.total),
+            "unscaled_audio_peak": self.peak,
+        }
+        with open(self.path + ".json.tmp", "w") as f:
+            json.dump(metadata, f)
+        os.replace(self.path + ".json.tmp", self.path + ".json")
+        print(f"[DIAG] Finished {self.path}: {metadata}", flush=True)
+
+    def work(self, input_items, output_items):
+        audio, power, gate = input_items
+        n = len(audio)
+        now = time.monotonic()
+        if self.wf is None and now >= self.next_check:
+            self.next_check = now + 1.0
+            try:
+                self._request()
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                print(f"[DIAG] Request rejected: {e}", flush=True)
+        if self.wf is not None:
+            if not self.is_tuned():
+                self._finish("retuned")
+                return n
+            count = min(n, self.remaining)
+            self.wf.writeframes((np.clip(audio[:count] * 0.125, -1, 1) * 32767).astype('<i2').tobytes())
+            self.rf_sum += float(np.sum(power[:count]))
+            self.rf_open += int(np.count_nonzero(gate[:count] > 0))
+            self.peak = max(self.peak, float(np.max(np.abs(audio[:count]))))
+            self.total += count
+            self.remaining -= count
+            if self.remaining == 0:
+                self._finish()
+        return n
+
+
+# Channel filtering: decimate broadly before applying a narrow passband.
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=16)
+def channel_filter_plan(sample_rate, output_rate, cutoff, transition, intermediate):
+    if sample_rate > intermediate and sample_rate % intermediate == 0:
+        first_decim = sample_rate // intermediate
+        first_taps = filter.firdes.low_pass(
+            1.0, sample_rate, intermediate / 4, intermediate / 4)
+        second_decim = intermediate // output_rate
+        second_taps = filter.firdes.low_pass(1.0, intermediate, cutoff, transition)
+        # Equivalent input-rate FIR gives the exact white-noise power gain
+        # used to seed adaptive squelch, including both stages' responses.
+        expanded = np.zeros((len(second_taps) - 1) * first_decim + 1)
+        expanded[::first_decim] = second_taps
+        nfft = 1 << (len(first_taps) + len(expanded) - 2).bit_length()
+        impulse = np.fft.irfft(
+            np.fft.rfft(first_taps, nfft) * np.fft.rfft(expanded, nfft), nfft)
+        noise_gain = float(np.dot(impulse, impulse))
+    else:
+        first_decim = int(sample_rate / output_rate)
+        first_taps = filter.firdes.low_pass(1.0, sample_rate, cutoff, transition)
+        second_decim, second_taps = 1, None
+        noise_gain = sum(x*x for x in first_taps)
+    return first_decim, first_taps, second_decim, second_taps, noise_gain
+
+
+class ChannelFilter(gr.hier_block2):
+    def __init__(self, plan, offset, sample_rate):
+        gr.hier_block2.__init__(self, "channel filter",
+            gr.io_signature(1, 1, gr.sizeof_gr_complex),
+            gr.io_signature(1, 1, gr.sizeof_gr_complex))
+        first_decim, first_taps, second_decim, second_taps, _ = plan
+        self.xlate = filter.freq_xlating_fir_filter_ccf(
+            first_decim, first_taps, offset, sample_rate)
+        if second_taps is None:
+            self.connect(self, self.xlate, self)
+        else:
+            self.narrow = filter.fir_filter_ccf(second_decim, second_taps)
+            self.connect(self, self.xlate, self.narrow, self)
+
+    def set_center_freq(self, offset):
+        self.xlate.set_center_freq(offset)
+
+
+# ---------------------------------------------------------------------------
 # Flowgraph
 # ---------------------------------------------------------------------------
+class CaptureHealth:
+    def __init__(self):
+        self.started_at = time.monotonic()
+        self.last_sample_at = self.started_at
+        self.last_sample_timestamp = 0.0
+        self._lock = threading.Lock()
+
+    def mark_samples(self):
+        with self._lock:
+            self.last_sample_at = time.monotonic()
+            self.last_sample_timestamp = time.time()
+
+    def snapshot(self, workers, timeout_sec=45.0):
+        with self._lock:
+            age = time.monotonic() - self.last_sample_at
+            timestamp = self.last_sample_timestamp
+        failed = next((worker.name for worker in workers if not worker.is_alive()), None)
+        error = f"{failed} stopped" if failed else None
+        if age > timeout_sec:
+            error = f"No fresh FFT samples for {age:.1f}s"
+        return timestamp, age, error
+
+
 class UnifiedSDR(gr.top_block):
     def __init__(self):
         gr.top_block.__init__(self, "Unified SDR")
         self._state_lock = threading.Lock()
+        self._tune_lock = threading.RLock()
+        self.settle_until = 0.0
         self._gr_lock = threading.Lock()  # serialise all connect()/disconnect() across threads
         self.current_center_hz = DWELL_CENTER
+        self.capture_health = CaptureHealth()
 
         # --- Source ---
         self.src = blocks.null_source(gr.sizeof_gr_complex)
         try:
-            import osmosdr
             _src_args = OSMOSDR_ARGS if OSMOSDR_ARGS else f"rtl_tcp={RTL_TCP_HOST}:{RTL_TCP_PORT}"
-            self.src = osmosdr.source(args=_src_args)
+            if _src_args.startswith("rtl_tcp="):
+                from rtl_tcp_source import RTLTCPSource
+                host, port = _src_args.removeprefix("rtl_tcp=").rsplit(":", 1)
+                self.src = RTLTCPSource(host, int(port))
+            else:
+                import osmosdr
+                self.src = osmosdr.source(args=_src_args)
             self.src.set_sample_rate(SAMPLE_RATE)
             self.src.set_center_freq(DWELL_CENTER)
             self.src.set_gain_mode(False)
-            self.src.set_gain(int(os.getenv("RF_GAIN", "30")))
+            self.src.set_gain(float(os.getenv("RF_GAIN", "30")))
             try:
                 self.src.set_freq_corr(PPM_CORRECTION)
             except Exception:
@@ -327,6 +558,7 @@ class UnifiedSDR(gr.top_block):
             sys.exit(1)
 
         # --- FFT energy-detection path ---
+        self.fft_window_power = sum(x*x for x in fft.window.blackmanharris(FFT_SIZE))
         self.fft_s2v = blocks.stream_to_vector(gr.sizeof_gr_complex, FFT_SIZE)
         self.fft     = fft.fft_vcc(FFT_SIZE, True,
                                     fft.window.blackmanharris(FFT_SIZE),
@@ -338,18 +570,30 @@ class UnifiedSDR(gr.top_block):
         # --- Fixed voice monitor ---
         self.fixed_freq = FIXED_MONITOR_HZ
         offset_fixed = self.fixed_freq - DWELL_CENTER
-        decim_fm = int(SAMPLE_RATE / AUDIO_RATE_FM)
-        taps_fm = filter.firdes.low_pass(1.0, SAMPLE_RATE,
-                                         NBFM_DEV * 2, NBFM_DEV * 0.5)
-        self.xlate_fixed = filter.freq_xlating_fir_filter_ccf(
-            decim_fm, taps_fm, offset_fixed, SAMPLE_RATE)
+        fm_plan = channel_filter_plan(
+            SAMPLE_RATE, AUDIO_RATE_FM, NBFM_DEV * 2, NBFM_DEV * 0.5, 240000)
+        self.fm_noise_gain = fm_plan[-1]
+        self.xlate_fixed = ChannelFilter(fm_plan, offset_fixed, SAMPLE_RATE)
         self.rf_squelch_fixed = analog.pwr_squelch_cc(
             RF_SQUELCH_DB, 0.001, 10, False)
+        self.gate_fixed = blocks.complex_to_mag_squared(1)
         self.nbfm_fixed = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
+        self.dc_fixed = filter.dc_blocker_ff(128, True)
         self.rec_fixed = SquelchRecorder(
-            self.fixed_freq, AUDIO_RATE_FM, route_voice_dir(self.fixed_freq))
-        self.connect(self.src, self.xlate_fixed, self.rf_squelch_fixed,
-                     self.nbfm_fixed, self.rec_fixed)
+            self.fixed_freq, AUDIO_RATE_FM, route_voice_dir(self.fixed_freq),
+            inhibited=not FIXED_MONITOR_ENABLED, rf_gated=True)
+        self.connect(self.src, self.xlate_fixed, self.nbfm_fixed, self.dc_fixed,
+                     (self.rec_fixed, 0))
+        self.connect(self.xlate_fixed, self.rf_squelch_fixed, self.gate_fixed,
+                     (self.rec_fixed, 1))
+        if DIAGNOSTICS_ENABLED:
+            self.diagnostic = BoundedDiagnosticRecorder(
+                self.fixed_freq,
+                lambda: self.get_center_hz() == DWELL_CENTER and time.time() >= self.settle_until)
+            self.diagnostic_power = blocks.complex_to_mag_squared(1)
+            self.connect(self.dc_fixed, (self.diagnostic, 0))
+            self.connect(self.xlate_fixed, self.diagnostic_power, (self.diagnostic, 1))
+            self.connect(self.gate_fixed, (self.diagnostic, 2))
 
         # --- RF power probe on fixed channel (feeds AutoSquelch) ---
         self.probe_fixed = analog.probe_avg_mag_sqrd_c(0, 0.001)
@@ -359,30 +603,31 @@ class UnifiedSDR(gr.top_block):
         # --- Dynamic FM slots (pre-wired with inhibited recorders) ---
         self.dyn_fm = []
         for i in range(NUM_DYN_FM):
-            xlate = filter.freq_xlating_fir_filter_ccf(
-                decim_fm, taps_fm, 0, SAMPLE_RATE)
+            xlate = ChannelFilter(fm_plan, 0, SAMPLE_RATE)
             rf_squelch = analog.pwr_squelch_cc(
                 RF_SQUELCH_DB, 0.001, 10, False)
+            gate = blocks.complex_to_mag_squared(1)
             nbfm = analog.quadrature_demod_cf(NBFM_DEMOD_GAIN)
-            rec = SquelchRecorder(0, AUDIO_RATE_FM, VOICE_DIR, inhibited=True)
+            dc_block = filter.dc_blocker_ff(128, True)
+            rec = SquelchRecorder(0, AUDIO_RATE_FM, VOICE_DIR, inhibited=True, rf_gated=True)
             probe = analog.probe_avg_mag_sqrd_c(0, 0.001)
-            self.connect(self.src, xlate, rf_squelch, nbfm, rec)
+            self.connect(self.src, xlate, nbfm, dc_block, (rec, 0))
+            self.connect(xlate, rf_squelch, gate, (rec, 1))
             self.connect(xlate, probe)
             self.dyn_fm.append({
                 "xlate": xlate, "rf_squelch": rf_squelch,
-                "nbfm": nbfm, "recorder": rec, "probe": probe,
+                "nbfm": nbfm, "dc_block": dc_block, "gate": gate, "recorder": rec, "probe": probe,
                 "sq_state": {},
                 "freq": None, "assigned_at": None, "idx": i
             })
 
         # --- Dynamic CW slots (pre-wired with inhibited recorders) ---
-        decim_cw = int(SAMPLE_RATE / AUDIO_RATE_CW)
-        taps_cw = filter.firdes.low_pass(1.0, SAMPLE_RATE,
-                                         CW_BW, 50)
+        cw_plan = channel_filter_plan(
+            SAMPLE_RATE, AUDIO_RATE_CW, CW_BW, 50, 48000)
+        self.cw_noise_gain = cw_plan[-1]
         self.dyn_cw = []
         for i in range(NUM_DYN_CW):
-            xlate = filter.freq_xlating_fir_filter_ccf(
-                decim_cw, taps_cw, 0, SAMPLE_RATE)
+            xlate = ChannelFilter(cw_plan, 0, SAMPLE_RATE)
             # CW slots need an RF gate just like FM: without one, every noise
             # blip in the CW subbands opens the envelope recorder and floods
             # the cw decoder with undecodable files.
@@ -440,7 +685,11 @@ class UnifiedSDR(gr.top_block):
             # Only evict slots that are IDLE (not actively recording)
             if rec is not None and rec.state == SquelchRecorder.RECORDING:
                 continue
-            age = now - slot.get("assigned_at", now)
+            # A steady FFT spur refreshes assigned_at even when RF squelch
+            # never opens. Recycle by actual recorder idleness, so those
+            # detections cannot reserve every channel indefinitely.
+            idle_since = getattr(rec, "idle_since", None)
+            age = now - (idle_since if idle_since is not None else slot.get("assigned_at", now))
             if age > SLOT_RECYCLE_SEC and age > best_age:
                 best = slot
                 best_age = age
@@ -468,7 +717,7 @@ class UnifiedSDR(gr.top_block):
         slot["freq"] = None
         slot["assigned_at"] = None
 
-    def _assign_fm_slot(self, freq_hz):
+    def _assign_fm_slot(self, freq_hz, noise_floor=None):
         """Assign a detected FM frequency to an available dynamic slot."""
         for slot in self.dyn_fm:
             if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
@@ -488,15 +737,21 @@ class UnifiedSDR(gr.top_block):
         out_dir = route_voice_dir(freq_hz)
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz, out_dir)
-        target["sq_state"].clear()  # re-learn the noise floor at the new offset
+        target["sq_state"].clear()
+        if noise_floor is not None:
+            target["sq_state"]["floor"] = noise_floor
+            threshold = min(max(noise_floor + AUTO_SQUELCH_MARGIN_DB,
+                                AUTO_SQUELCH_MIN_DB), AUTO_SQUELCH_MAX_DB)
+            target["rf_squelch"].set_threshold(threshold)
+            target["sq_state"]["thr"] = threshold
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] FM slot {target['idx']} → {freq_hz/1e6:.4f} MHz ({os.path.basename(out_dir)})", flush=True)
 
-    def _assign_cw_slot(self, freq_hz):
+    def _assign_cw_slot(self, freq_hz, noise_floor=None):
         """Assign a detected CW frequency to an available dynamic slot."""
         for slot in self.dyn_cw:
-            if frequency_matches(slot["freq"], freq_hz, DYN_SLOT_FREQ_TOLERANCE_HZ):
+            if frequency_matches(slot["freq"], freq_hz, CW_SLOT_FREQ_TOLERANCE_HZ):
                 slot["assigned_at"] = time.time()
                 return
         target = None
@@ -511,7 +766,13 @@ class UnifiedSDR(gr.top_block):
         offset = freq_hz - self.get_center_hz()
         target["xlate"].set_center_freq(offset)
         target["recorder"].activate(freq_hz)
-        target["sq_state"].clear()  # re-learn the noise floor at the new offset
+        target["sq_state"].clear()
+        if noise_floor is not None:
+            target["sq_state"]["floor"] = noise_floor
+            threshold = min(max(noise_floor + AUTO_SQUELCH_MARGIN_DB,
+                                AUTO_SQUELCH_MIN_DB), AUTO_SQUELCH_MAX_DB)
+            target["rf_squelch"].set_threshold(threshold)
+            target["sq_state"]["thr"] = threshold
         target["freq"] = freq_hz
         target["assigned_at"] = time.time()
         print(f"[DYN] CW slot {target['idx']} → {freq_hz/1e6:.4f} MHz", flush=True)
@@ -574,15 +835,21 @@ class UnifiedSDR(gr.top_block):
             return self.current_center_hz
 
     def retune(self, center_hz):
-        self.src.set_center_freq(center_hz)
-        with self._state_lock:
-            self.current_center_hz = center_hz
-        # Channel offsets now point at different spectrum — re-learn floors.
-        self.fixed_sq_state.clear()
-        for slot in self.dyn_fm:
-            slot["sq_state"].clear()
-        for slot in self.dyn_cw:
-            slot["sq_state"].clear()
+        # Serialize slot assignment with tuning. Never carry a channel offset
+        # or FFT frame from one band into another band's frequency labels.
+        with self._tune_lock:
+            self.rec_fixed.deactivate()
+            self.deactivate_all_dynamic()
+            self.src.set_center_freq(center_hz)
+            with self._state_lock:
+                self.current_center_hz = center_hz
+            self.fft_sink.reset()
+            self.settle_until = time.time() + RF_SETTLE_SEC
+            self.fixed_sq_state.clear()
+            if center_hz == DWELL_CENTER and FIXED_MONITOR_ENABLED:
+                self.rec_fixed.activate(self.fixed_freq)
+                self.rec_fixed.set_inhibit(RF_SETTLE_SEC)
+
 
 # ---------------------------------------------------------------------------
 # FFT energy detector (background thread)
@@ -599,8 +866,12 @@ class FFTDetector(threading.Thread):
         while True:
             time.sleep(FFT_INTERVAL)
             try:
-                self._noise_guard()
-                self._scan_fft()
+                with self.tb._tune_lock:
+                    if time.time() < self.tb.settle_until:
+                        self.tb.fft_sink.reset()
+                        continue
+                    self._noise_guard()
+                    self._scan_fft()
             except Exception as e:
                 print(f"[FFT] Error: {e}", flush=True)
 
@@ -641,9 +912,12 @@ class FFTDetector(threading.Thread):
                       f"empty_count={self._fft_empty_count}", flush=True)
             return
 
-        # Take the last complete FFT frame
-        frame = np.array(data[-FFT_SIZE:])
+        # Average recent frames: one noise realization has random tall bins
+        # that otherwise occupy every slot before a real transmission begins.
+        frame_count = min(16, len(data) // FFT_SIZE)
+        frame = np.array(data[-FFT_SIZE * frame_count:]).reshape(frame_count, FFT_SIZE).mean(axis=0)
         self.tb.fft_sink.reset()
+        self.tb.capture_health.mark_samples()
 
         power_db = 10.0 * np.log10(frame + 1e-30)
         # FFT bins are already shifted by fft_vcc with shift=True
@@ -678,11 +952,25 @@ class FFTDetector(threading.Thread):
         if in_region:
             regions.append((start, FFT_SIZE))
 
+        # Allocate scarce channels to the strongest peaks first.
+        regions.sort(key=lambda region: float(np.max(power_db[region[0]:region[1]])),
+                     reverse=True)
+        # A detected carrier is signal, not the channel's noise floor. Convert
+        # median FFT-bin power into filtered channel power (window + FIR gains).
+        median_ratio = math.log(2) if frame_count == 1 else (1 - 1 / (9 * frame_count)) ** 3
+        input_noise = float(np.median(frame)) / (self.tb.fft_window_power * median_ratio)
+        fm_floor = 10 * math.log10(input_noise * self.tb.fm_noise_gain + 1e-30)
+        cw_floor = 10 * math.log10(input_noise * self.tb.cw_noise_gain + 1e-30)
         for (s, e) in regions:
             peak_idx = s + np.argmax(power_db[s:e])
             peak_freq = freqs[peak_idx]
             peak_power = float(power_db[peak_idx])
             bw = float(freqs[min(e, FFT_SIZE - 1)] - freqs[s])
+            # Zero-IF receivers produce a DC spike at the tuning center. Also
+            # avoid filter rolloff at the outer 5 percent of the sampled span.
+            offset = abs(peak_freq - center_hz)
+            if offset < max(1000, 2 * SAMPLE_RATE / FFT_SIZE) or offset > 0.45 * SAMPLE_RATE:
+                continue
 
             slot_mode = classify_peak_for_recording(
                 peak_freq,
@@ -712,9 +1000,9 @@ class FFTDetector(threading.Thread):
                 # Do not mirror the fixed monitor channel into a dynamic slot.
                 if abs(peak_freq - self.tb.fixed_freq) <= 15000:
                     continue
-                self.tb._assign_fm_slot(int(round(peak_freq)))
+                self.tb._assign_fm_slot(int(round(peak_freq)), fm_floor)
             elif slot_mode == "CW":
-                self.tb._assign_cw_slot(int(round(peak_freq)))
+                self.tb._assign_cw_slot(int(round(peak_freq)), cw_floor)
 
         self.detections = detections
         self._write_detections()
@@ -723,6 +1011,8 @@ class FFTDetector(threading.Thread):
         out = {
             "source": "unified_sdr",
             "capture_id": CAPTURE_ID,
+            "source_sdr": CAPTURE_SOURCE,
+            "device_serial": CAPTURE_DEVICE_SERIAL,
             "sample_rate": SAMPLE_RATE,
             "center_freq_hz": self.tb.get_center_hz(),
             "timestamp": time.time(),
@@ -756,19 +1046,11 @@ class ScanScheduler(threading.Thread):
             # Scan secondary bands
             for center in SCAN_CENTERS:
                 print(f"[SCAN] Retuning to {center/1e6:.1f} MHz", flush=True)
-                self.tb.close_all_recordings()
-                if CLEAR_SLOTS_ON_RETUNE:
-                    self.tb.clear_dynamic_slots()
                 self.tb.retune(center)
-                self.tb.inhibit_recordings(RF_SETTLE_SEC)
                 time.sleep(SCAN_SEC)
 
-            # Return to primary
             print(f"[SCAN] Returning to {DWELL_CENTER/1e6:.1f} MHz", flush=True)
-            if CLEAR_SLOTS_ON_RETUNE:
-                self.tb.clear_dynamic_slots()
             self.tb.retune(DWELL_CENTER)
-            self.tb.inhibit_recordings(RF_SETTLE_SEC)
 
 # ---------------------------------------------------------------------------
 # Adaptive RF squelch (background thread)
@@ -820,20 +1102,21 @@ class AutoSquelch(threading.Thread):
         time.sleep(5)  # let the flowgraph settle
         while True:
             try:
-                lines = [self._update(
-                    f"{self.tb.fixed_freq/1e6:.4f}", self.tb.probe_fixed,
-                    self.tb.rf_squelch_fixed, self.tb.rec_fixed,
-                    self.tb.fixed_sq_state)]
-                for slot in self.tb.dyn_fm + self.tb.dyn_cw:
-                    if slot["freq"] is None:
-                        continue
-                    lines.append(self._update(
-                        f"{slot['freq']/1e6:.4f}", slot["probe"],
-                        slot["rf_squelch"], slot["recorder"],
-                        slot["sq_state"]))
-                if time.time() - self._last_log >= AUTO_SQUELCH_LOG_SEC:
-                    print(f"[SQL] {' | '.join(lines)}", flush=True)
-                    self._last_log = time.time()
+                with self.tb._tune_lock:
+                    lines = [self._update(
+                        f"{self.tb.fixed_freq/1e6:.4f}", self.tb.probe_fixed,
+                        self.tb.rf_squelch_fixed, self.tb.rec_fixed,
+                        self.tb.fixed_sq_state)]
+                    for slot in self.tb.dyn_fm + self.tb.dyn_cw:
+                        if slot["freq"] is None:
+                            continue
+                        lines.append(self._update(
+                            f"{slot['freq']/1e6:.4f}", slot["probe"],
+                            slot["rf_squelch"], slot["recorder"],
+                            slot["sq_state"]))
+                    if time.time() - self._last_log >= AUTO_SQUELCH_LOG_SEC:
+                        print(f"[SQL] {' | '.join(lines)}", flush=True)
+                        self._last_log = time.time()
             except Exception as e:
                 print(f"[SQL] Error: {e}", flush=True)
             time.sleep(AUTO_SQUELCH_INTERVAL)
@@ -867,7 +1150,9 @@ class SatWindowMonitor(threading.Thread):
         time.sleep(10)
         while True:
             try:
-                self._tick()
+                with self.tb._tune_lock:
+                    if time.time() >= self.tb.settle_until:
+                        self._tick()
             except Exception as e:
                 print(f"[SAT] Error: {e}", flush=True)
             time.sleep(30)
@@ -901,17 +1186,27 @@ class SatWindowMonitor(threading.Thread):
 # RF power monitor (background thread — logs noise floor for squelch tuning)
 # ---------------------------------------------------------------------------
 class RFPowerMonitor(threading.Thread):
-    def __init__(self, tb):
+    def __init__(self, tb, workers):
         super().__init__(daemon=True)
         self.tb = tb
+        self.workers = workers
 
     def run(self):
         time.sleep(3)  # let flowgraph settle
         while True:
             try:
+                sample_timestamp, sample_age, error = self.tb.capture_health.snapshot(self.workers)
+                if error:
+                    print(f"[HEALTH] {error}; exiting for receiver restart", flush=True)
+                    try:
+                        os.remove(HEARTBEAT_PATH)
+                    except FileNotFoundError:
+                        pass
+                    os._exit(1)
                 heartbeat = {
                     "capture_id": CAPTURE_ID,
-                    "timestamp": time.time(),
+                    "timestamp": sample_timestamp,
+                    "sample_age_sec": sample_age,
                     "center_freq_hz": self.tb.get_center_hz(),
                     "fixed_monitor_hz": self.tb.fixed_freq,
                 }
@@ -957,7 +1252,7 @@ def main():
     scanner = ScanScheduler(tb)
     scanner.start()
 
-    rf_mon = RFPowerMonitor(tb)
+    rf_mon = RFPowerMonitor(tb, [fft_det, scanner])
     rf_mon.start()
 
     if AUTO_SQUELCH:

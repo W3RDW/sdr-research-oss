@@ -49,7 +49,10 @@ RUN git clone --depth=1 https://github.com/pothosware/SoapyRemote /tmp/SoapyRemo
 # Supports: RX888 MkII, RX888r2, RX999, RX-666, BBRF103, HF103.
 # Firmware (SDDC_FX3.img) is included in the repo and installed to
 # /usr/local/share/sddc/ — the driver loads it over USB on first open.
-RUN git clone --depth 1 https://github.com/ik1xpv/ExtIO_sddc /tmp/sddc && \
+COPY patches/driver-recovery.patch /tmp/driver-recovery.patch
+RUN git clone https://github.com/ik1xpv/ExtIO_sddc /tmp/sddc && \
+    git -C /tmp/sddc checkout 331b35cd619bf4af20444d64dc35b13a474493e6 && \
+    git -C /tmp/sddc apply /tmp/driver-recovery.patch && \
     cmake -B /tmp/sddc/build -S /tmp/sddc \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \

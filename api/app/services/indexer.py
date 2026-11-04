@@ -424,6 +424,11 @@ def safe_unlink(path: str | None):
         os.remove(path)
     except OSError:
         pass
+    if str(path).endswith(".wav"):
+        try:
+            os.remove(Path(path).with_suffix(".capture.json"))
+        except OSError:
+            pass
 
 
 _prune_cursor_id: int = 0
@@ -961,6 +966,27 @@ def _touch_heartbeat():
 # Time budget per index_directory call — prevents one mode from starving others
 _INDEX_TIME_BUDGET_SEC = float(os.getenv("INDEX_TIME_BUDGET_SEC", "30"))
 
+def recording_source(wav_file, directory_name, frequency_hz):
+    """Prefer capture provenance; infer only for older files without a sidecar."""
+    try:
+        capture = json.loads(Path(wav_file).with_suffix(".capture.json").read_text())
+        source = capture.get("source_sdr")
+        if isinstance(source, str) and 0 < len(source) <= 64:
+            return source
+    except (OSError, ValueError, AttributeError):
+        pass
+    freq = frequency_hz or 0
+    if directory_name == "pager" or 150e6 <= freq <= 162e6:
+        return "rtl-pager"
+    if 420e6 <= freq <= 450e6:
+        return "rtl-70cm"
+    if 130e6 <= freq <= 180e6:
+        return "airspy-2m"
+    if freq < 64e6:
+        return "rx888-hf"
+    return "airspy-2m"
+
+
 def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dict, hamdb_budget: dict | None = None):
     global _last_index_scan_ts
     db = SessionLocal()
@@ -1135,19 +1161,8 @@ def index_directory(mode: str, audio_dir: str, text_dir: str, ollama_budget: dic
                 transcript=transcript,
             )
             recording.signal_db = compute_signal_db(str(wav_file))
-            # Infer source SDR from audio directory and frequency
-            _dir_name = audio_path.name  # voice, cw, pager
-            _freq = metadata.get("frequency_hz") or 0
-            if _dir_name == "pager" or (150e6 <= _freq <= 162e6):
-                recording.source_sdr = "rtl-pager"
-            elif 420e6 <= _freq <= 450e6:
-                recording.source_sdr = "rtl-70cm"
-            elif 130e6 <= _freq <= 180e6:
-                recording.source_sdr = "airspy-2m"
-            elif _freq < 64e6:
-                recording.source_sdr = "rx888-hf"
-            else:
-                recording.source_sdr = "airspy-2m"
+            recording.source_sdr = recording_source(
+                wav_file, audio_path.name, metadata.get("frequency_hz"))
             maybe_set_frequency_metadata(db, recording)
             # DTMF detection for voice recordings (skip public-safety/pager digital data)
             if effective_mode == "voice" and recording.audio_path and not is_public_safety_frequency_hz(_rec_freq):
@@ -2218,7 +2233,7 @@ def _backfill_ai_tags(batch_size: int = 1000, ollama_budget: dict | None = None,
         db.close()
 
 def should_auto_delete_short_voice(mode, duration, frequency_hz):
-    return (mode == "voice" and duration is not None and 0 <= duration < 3.0
+    return (mode == "voice" and duration is not None and 0 <= duration < 0.5
             and not is_aprs_frequency_hz(frequency_hz or 0))
 
 
@@ -2239,7 +2254,7 @@ def _cleanup_short_recordings():
                 Recording.mode == "voice",
                 Recording.duration_seconds.isnot(None),
                 Recording.duration_seconds >= 0,
-                Recording.duration_seconds < 3.0,
+                Recording.duration_seconds < 0.5,
                 ~_func.coalesce(Recording.frequency_hz, 0).between(144370000, 144410000),
                 ~_func.coalesce(Recording.frequency_hz, 0).between(145805000, 145845000),
             )
@@ -2262,7 +2277,7 @@ def _cleanup_short_recordings():
             deleted += 1
         if deleted:
             db.commit()
-            print(f"[CLEANUP] Deleted {deleted} short voice recordings (<3s)")
+            print(f"[CLEANUP] Deleted {deleted} short voice recordings (<0.5s)")
     except Exception as e:
         print(f"[CLEANUP] error: {e}")
         db.rollback()

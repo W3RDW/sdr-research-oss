@@ -90,9 +90,20 @@ def estimate_dit_ms(runs):
     on_durs = sorted(d for is_on, d in runs if is_on and d > 5)
     if len(on_durs) < 3:
         return None
-    half = on_durs[: max(1, len(on_durs) // 2)]
-    dit  = sum(half) / len(half)
-    return max(20.0, min(dit, 300.0))
+    # The shorter half can include dashes (CQ has five dashes and only three
+    # dots). Separate the two duration clusters instead of averaging them.
+    dot, dash = on_durs[0], on_durs[-1]
+    for _ in range(8):
+        boundary = (dot + dash) / 2
+        short = [d for d in on_durs if d <= boundary]
+        long = [d for d in on_durs if d > boundary]
+        if not short or not long:
+            break
+        dot, dash = sum(short) / len(short), sum(long) / len(long)
+    dit = dot if dash >= dot * 1.8 else sum(on_durs) / len(on_durs)
+    # Outside the supported 4-60 WPM range, crackles must not be coerced into
+    # human Morse timing. Live interference produced 5-8 ms key fragments.
+    return dit if 20.0 <= dit <= 300.0 else None
 
 def decode_runs(runs, dit_ms):
     DAH_THRESH  = dit_ms * 2.0
@@ -160,12 +171,15 @@ def main():
                     continue
                 if text is None:
                     print(f"  No decodable CW", flush=True)
+                    text = "[no decodable cw]"
                 else:
-                    tmp = out + ".tmp"
-                    with open(tmp, "w") as f:
-                        f.write(text + "\n")
-                    os.rename(tmp, out)
                     print(f"  → {text!r}", flush=True)
+                # Cache failed attempts too, so noise does not get decoded
+                # again every ten seconds for the entire retention window.
+                tmp = out + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(text + "\n")
+                os.rename(tmp, out)
         except Exception as exc:
             print(f"Loop error: {exc}", flush=True)
         time.sleep(SLEEP_SEC)

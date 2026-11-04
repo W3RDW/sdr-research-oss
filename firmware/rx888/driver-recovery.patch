@@ -1,0 +1,146 @@
+diff --git a/Core/RadioHandler.cpp b/Core/RadioHandler.cpp
+index 7c1a529..2ad68a7 100644
+--- a/Core/RadioHandler.cpp
++++ b/Core/RadioHandler.cpp
+@@ -86,16 +86,16 @@ const char *RadioHandlerClass::getName() const
+ 
+ bool RadioHandlerClass::Init(fx3class* Fx3, void (*callback)(void*context, const float*, uint32_t), r2iqControlClass *r2iqCntrl, void *context)
+ {
+-	uint8_t rdata[4];
++	uint8_t rdata[4] = {0};
+ 	this->fx3 = Fx3;
+ 	this->Callback = callback;
+ 	this->callbackContext = context;
+ 
++	if (!Fx3->GetHardwareInfo((uint32_t*)rdata)) return false;
++
+ 	if (r2iqCntrl == nullptr)
+ 		r2iqCntrl = new fft_mt_r2iq();
+ 
+-	Fx3->GetHardwareInfo((uint32_t*)rdata);
+-
+ 	radio = (RadioModel)rdata[0];
+ 	firmware = (rdata[1] << 8) + rdata[2];
+ 
+diff --git a/Core/arch/linux/FX3handler.cpp b/Core/arch/linux/FX3handler.cpp
+index 8870484..c105bd8 100644
+--- a/Core/arch/linux/FX3handler.cpp
++++ b/Core/arch/linux/FX3handler.cpp
+@@ -31,8 +31,12 @@ bool fx3handler::Open()
+     dev = usb_device_open(devidx, firmware_data, firmware_size);
+     DbgPrintf("Open DevIdx=%d dev=%p\n", devidx, dev);
+ 
++    if (dev == nullptr) return false;
+     usleep(5000);
+-    Control(STOPFX3, (uint8_t)0);
++    if (!Control(STOPFX3, (uint8_t)0)) {
++        Close();
++        return false;
++    }
+ 
+     return dev != nullptr;
+ }
+@@ -129,7 +133,11 @@ bool fx3handler::Enumerate(unsigned char &idx, char *lbuf)
+     if (idx >= usb_device_count_devices()) return false;
+ 
+     if (usb_device_infos == nullptr) {
+-        usb_device_get_device_list(&usb_device_infos);
++        int count = usb_device_get_device_list(&usb_device_infos);
++        if (count <= idx || usb_device_infos == nullptr) {
++            usb_device_infos = nullptr;
++            return false;
++        }
+     }
+ 
+     auto dev = &usb_device_infos[idx];
+diff --git a/Core/arch/linux/usb_device.c b/Core/arch/linux/usb_device.c
+index 1384430..66bb8ad 100644
+--- a/Core/arch/linux/usb_device.c
++++ b/Core/arch/linux/usb_device.c
+@@ -154,36 +154,39 @@ int usb_device_get_device_list(struct usb_device_info **usb_device_infos)
+       device_infos[count].manufacturer[0] = '\0';
+       if (desc.iManufacturer) {
+         ret = libusb_get_string_descriptor_ascii(dev_handle, desc.iManufacturer,
+-                      device_infos[count].manufacturer, MAX_STRING_BYTES);
++                      device_infos[count].manufacturer, MAX_STRING_BYTES - 1);
+         if (ret < 0) {
+           log_usb_error(ret, __func__, __FILE__, __LINE__);
+           goto FAIL3;
+         }
+-        device_infos[count].manufacturer = (unsigned char *) realloc(device_infos[count].manufacturer, ret);
++        device_infos[count].manufacturer[ret] = 0;
++        device_infos[count].manufacturer = (unsigned char *) realloc(device_infos[count].manufacturer, ret + 1);
+       }
+ 
+       device_infos[count].product = (unsigned char *) malloc(MAX_STRING_BYTES);
+       device_infos[count].product[0] = '\0';
+       if (desc.iProduct) {
+         ret = libusb_get_string_descriptor_ascii(dev_handle, desc.iProduct,
+-                      device_infos[count].product, MAX_STRING_BYTES);
++                      device_infos[count].product, MAX_STRING_BYTES - 1);
+         if (ret < 0) {
+           log_usb_error(ret, __func__, __FILE__, __LINE__);
+           goto FAIL3;
+         }
+-        device_infos[count].product = (unsigned char *) realloc(device_infos[count].product, ret);
++        device_infos[count].product[ret] = 0;
++        device_infos[count].product = (unsigned char *) realloc(device_infos[count].product, ret + 1);
+       }
+ 
+       device_infos[count].serial_number = (unsigned char *) malloc(MAX_STRING_BYTES);
+       device_infos[count].serial_number[0] = '\0';
+       if (desc.iSerialNumber) {
+         ret = libusb_get_string_descriptor_ascii(dev_handle, desc.iSerialNumber,
+-                      device_infos[count].serial_number, MAX_STRING_BYTES);
++                      device_infos[count].serial_number, MAX_STRING_BYTES - 1);
+         if (ret < 0) {
+           log_usb_error(ret, __func__, __FILE__, __LINE__);
+           goto FAIL3;
+         }
+-        device_infos[count].serial_number = (unsigned char *) realloc(device_infos[count].serial_number, ret);
++        device_infos[count].serial_number[ret] = 0;
++        device_infos[count].serial_number = (unsigned char *) realloc(device_infos[count].serial_number, ret + 1);
+       }
+       ret = 0;
+ FAIL3:
+@@ -263,7 +266,7 @@ usb_device_t *usb_device_open(int index, const char* image,
+     libusb_close(dev_handle);
+ 
+     /* wait unitl firmware is ready */
+-    usleep(500 * 1000L);
++    usleep(3000 * 1000L);
+ 
+     needs_firmware = 0;
+     dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);
+diff --git a/SoapySDDC/Settings.cpp b/SoapySDDC/Settings.cpp
+index 2cebaa2..be0f18c 100644
+--- a/SoapySDDC/Settings.cpp
++++ b/SoapySDDC/Settings.cpp
+@@ -5,6 +5,7 @@
+ #include <cstdint>
+ #include <sys/types.h>
+ #include <cstring>
++#include <stdexcept>
+ 
+ static void _Callback(void *context, const float *data, uint32_t len)
+ {
+@@ -43,9 +44,16 @@ SoapySDDC::SoapySDDC(const SoapySDR::Kwargs &args) : deviceId(-1),
+     DbgPrintf("SoapySDDC::SoapySDDC\n");
+     unsigned char idx = 0;
+     DevContext devicelist;
+-    Fx3->Enumerate(idx, devicelist.dev[0]);
+-    Fx3->Open();
+-    RadioHandler.Init(Fx3, _Callback, nullptr, this);
++    if (!Fx3->Enumerate(idx, devicelist.dev[0]) || !Fx3->Open()) {
++        delete Fx3;
++        Fx3 = nullptr;
++        throw std::runtime_error("RX888 USB enumeration/open failed; check USB 3 connection and firmware readiness");
++    }
++    if (!RadioHandler.Init(Fx3, _Callback, nullptr, this)) {
++        delete Fx3;
++        Fx3 = nullptr;
++        throw std::runtime_error("RX888 hardware-info request failed");
++    }
+ 
+     if (supportsHighADCFrequency()) {
+         adcnominalfreq = 128000000;
